@@ -1,0 +1,40 @@
+user_goal_to_allowed_topics:
+  ask_product_recommendation:
+    - product_relation_or_difference
+    - catalog_list_request
+    - specific_brand_check
+
+  ask_price:
+    - epc_tariffs
+    - tis_tariffs
+    - specific_brand_check
+
+  ask_support:
+    - post_payment_no_access
+    - human_operator_request
+    - manager_setup_support
+
+  ask_purchase_steps:
+    - purchase_ready
+    - legal_entity_purchase_flow
+    - payment_process
+
+  ask_benefits:
+    - company_services_info
+    - competitor_comparison
+
+  ask_limitations:
+    - company_services_info
+    - usage_limits
+    - multi_device_access
+
+  ask_manager:
+    - human_operator_request
+
+  complain_or_distrust:
+    - human_operator_request
+    - company_services_info
+
+  ask_free_or_bypass_payment:
+    - demo_access
+    - out_of_scope_request

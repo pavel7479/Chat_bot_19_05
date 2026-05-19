@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+logs/
+tests/_snapshots/
+tests/testsOfBestVar/tests_log_OfBestVar
+tests/testsOfBestVar/tests_log_OfBestVar_stage_02

@@ -1,0 +1,202 @@
+intents:
+  - intent: price_objection
+    confidence: 0.95
+    priority: 80
+    patterns:
+      - "\\b(дорого|дороговато|слишком дорого|дешевле у|у конкурентов дешевле)\\b"
+    slots:
+      pricing_request: true
+
+  - intent: competitor_choice
+    confidence: 0.95
+    priority: 80
+    patterns:
+      - "\\b(уйду к конкурент|выберу конкурент|у конкурентов лучше)\\b"
+    slots:
+      feature_comparison: true
+
+  - intent: free_catalog_comparison
+    confidence: 0.95
+    priority: 85
+    patterns:
+      - "\\b(бесплатн\\w* каталог|бесплатн\\w* доступ|сравн\\w* с бесплатн\\w*|поставщик\\w* бесплатно)\\b"
+    slots:
+      feature_comparison: true
+
+  - intent: tis_tariffs
+    confidence: 0.98
+    priority: 95
+    patterns:
+      - "\\b(сколько|цена|стоимость|тариф)\\b.*\\b(tis|тис|tiss|тех)"
+      - "\\b(tis|тис|tiss)\\b.*\\b(сколько|цена|стоимость|тариф)"
+    slots:
+      pricing_request: true
+
+  - intent: epc_tariffs
+    confidence: 0.98
+    priority: 95
+    patterns:
+      - "\\b(сколько|цена|стоимость|тариф)\\b.*\\b(подписк|epc|епс|каталог)"
+      - "\\b(подписк|epc|епс)\\b.*\\b(сколько|цена|стоимость|тариф)"
+    slots:
+      pricing_request: true
+
+  - intent: brand_list_request
+    confidence: 0.97
+    priority: 85
+    patterns:
+      - "\\b(какие|какой|перечень|список)\\b.*\\b(каталог|бренд|марк)"
+      - "\\b(какие есть|что есть)\\b.*\\b(каталог|бренд|марк)"
+      - "^(а\\s+)?какие\\s+есть\\??$"
+      - "(по\\s+грузов\\w*\\s+что\\s+есть)"
+    slots:
+      catalog_list_request: true
+
+  - intent: specific_brand_check
+    confidence: 0.97
+    priority: 90
+    patterns:
+      - "\\b(есть ли|есть|наличие)\\b.*\\b(bmw|audi|mercedes|мерседес|volvo|вольво|uaz|уаз|toyota|lexus|kia|hyundai|skoda|шкода|volkswagen|фольцваген)\\b"
+      - "\\b(bmw|audi|mercedes|мерседес|volvo|вольво|uaz|уаз|toyota|lexus|kia|hyundai|skoda|шкода|volkswagen|фольцваген)\\b.*\\b(есть|каталог)\\b"
+    slots:
+      catalog_list_request: true
+
+  - intent: company_services_info
+    confidence: 0.95
+    priority: 75
+    patterns:
+      - "\\b(расскажи|подскажи|подробно)\\b.*\\b(подписк|сервис|возможност)"
+      - "\\b(что умеешь|чем можешь помочь)"
+      - "(какие\\s+преимущества|чем\\s+вы\\s+лучше|есть\\s+ли\\s+скидк)"
+      - "(можно\\s+ли\\s+пользоваться\\s+нескольким\\s+людям|несколько\\s+сотрудник\\w*|несколько\\s+пользоват\\w*)"
+    slots:
+      company_services_overview: true
+
+  - intent: post_payment_no_access
+    confidence: 0.97
+    priority: 96
+    patterns:
+      - "(вернут\\w*\\s+деньг|возврат\\w*\\s+денег|если\\s+не\\s+подошл|как\\s+вернуть\\s+деньги)"
+    slots:
+      post_payment_no_access_slot: true
+
+  - intent: nonsense_input
+    confidence: 0.92
+    priority: 97
+    patterns:
+      - "(куда\\s+ты\\s+меня\\s+оформлять|горячку\\s+не\\s+пори)"
+    slots:
+      pricing_request: false
+
+  - intent: demo_access
+    confidence: 0.96
+    priority: 92
+    patterns:
+      - "(дай\\s+бесплатн\\w*\\s+доступ|бесплатн\\w*\\s+доступ|бесплатн\\w*\\s+навсегда|бесплатно\\s+навсегда)"
+      - "\\b(демо|demo|trial|пробный\\s+доступ)\\b"
+    slots:
+      demo_request: true
+
+  - intent: purchase_ready
+    confidence: 0.96
+    priority: 60
+    patterns:
+      - "\\b(как купить|оформить|оформляем|хочу купить|готов(ы)? оплатить|нужен доступ)\\b"
+    slots:
+      pricing_request: true
+
+  - intent: legal_entity_purchase_flow
+    confidence: 0.96
+    priority: 88
+    patterns:
+      - "\\b(инн|реквизит|счет|сч[её]т|qr|кпп|юр\\.?\\s*лиц|ип)\\b"
+    slots:
+      pricing_request: true
+
+  - intent: payment_without_details
+    confidence: 0.97
+    priority: 93
+    patterns:
+      - "(без инн|инн не дам|инн позже|без реквизит|город не скажу)"
+    slots:
+      pricing_request: false
+
+  - intent: api_integration
+    confidence: 0.96
+    priority: 85
+    patterns:
+      - "\\b(api|интеграц|1с|crm|выгрузк)\\b"
+    slots:
+      company_services_overview: true
+
+  - intent: human_operator_request
+    confidence: 0.96
+    priority: 94
+    patterns:
+      - "\\b(менеджер|оператор|человек|соедини|переключи)\\b"
+    slots:
+      company_services_overview: true
+
+  - intent: physical_person_purchase
+    confidence: 0.96
+    priority: 98
+    patterns:
+      - "\\b(физлиц|физ лицо|частн(ое|ый)|я физик)\\b"
+    slots:
+      company_services_overview: false
+
+  - intent: no_private_sales_reason
+    confidence: 0.96
+    priority: 98
+    patterns:
+      - "(почему.*физ|почему нельзя физ|почему не продаете физ)"
+    slots:
+      company_services_overview: false
+
+  - intent: macos_support
+    confidence: 0.96
+    priority: 82
+    patterns:
+      - "\\b(mac|macos|на мак|для mac)\\b"
+    slots:
+      company_services_overview: true
+
+  - intent: post_payment_access_timing
+    confidence: 0.96
+    priority: 90
+    patterns:
+      - "(после\\s+оплат\\w*\\s+доступ\\w*\\s+сразу|когда\\s+после\\s+оплат\\w*\\s+доступ|как\\s+быстро\\s+после\\s+оплат\\w*)"
+    slots:
+      post_payment_access: true
+
+  - intent: post_payment_no_access
+    confidence: 0.97
+    priority: 96
+    patterns:
+      - "(оплат\\w*.*(нет|не).*(доступ|вход)|после\\s+оплат\\w*.*не\\s+работает\\s+вход)"
+    slots:
+      post_payment_no_access_slot: true
+
+  - intent: usage_limits
+    confidence: 0.96
+    priority: 86
+    patterns:
+      - "(лимит\\w*\\s+запрос|ограничен\\w*\\s+по\\s+запрос|сколько\\s+запрос\\w*\\s+можно|безлимит)"
+    slots:
+      usage_limits_slot: true
+
+  - intent: multi_device_access
+    confidence: 0.96
+    priority: 86
+    patterns:
+      - "(нескольк\\w*\\s+пользоват\\w*|нескольк\\w*\\s+сотрудник\\w*|с\\s+разных\\s+компьютер|с\\s+разных\\s+устройств)"
+    slots:
+      multi_device_access_slot: true
+
+  - intent: manager_setup_support
+    confidence: 0.95
+    priority: 84
+    patterns:
+      - "(кто\\s+поможет\\s+с\\s+настройк|консульт\\w*\\s+по\\s+настройк|вопрос\\w*\\s+по\\s+приложен)"
+    slots:
+      manager_setup_support_slot: true

@@ -1,0 +1,43 @@
+Пользователь
+   |
+   v
+ChatBotOrchestrator.respond()
+   |
+   +--> SessionManager.add_user_message()
+   |
+   +--> SessionManager.get_history() + format_history()
+   |
+   +--> SessionManager.get_state()
+   |
+   +--> IntentAgent.classify()
+   |      |
+   |      +--> PromptManager.build_topic_prompt()
+   |      +--> TopicClassifier.classify()
+   |             |
+   |             +--> LLMProvider.generate_json()
+   |             +--> PromptContextExtractor
+   |             +--> DialogueStateResolver
+   |             +--> SignalExtractor
+   |             +--> TopicNormalizationPolicy (rules/ranking)
+   |             +--> TopicClassificationResult
+   |
+   +--> SessionManager.set_state(SessionState from state_snapshot)
+   |
+   +--> RetrievalAgent.retrieve(user_query, topic_ids)
+   |      |
+   |      +--> SimpleTextSearcher.search(topic_id, query)
+   |      +--> RetrievedChunk[] + retrieved_context
+   |
+   +--> ResponseAgent.generate(...)
+          |
+          +--> ResponseActionSelector.select(topic_ids, state, user_query)
+          +--> DeterministicResponseBuilder.build(action,...)
+          +--> ResponseContractValidator.validate()
+          +--> (fallback) PromptManager.build_answer_prompt()
+          +--> (fallback) LLMProvider.generate_json()
+          +--> BotResponse
+   |
+   +--> SessionManager.add_bot_message()
+   |
+   v
+Ответ пользователю

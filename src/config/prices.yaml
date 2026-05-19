@@ -1,0 +1,34 @@
+epc_prices:
+  1_month: 6500
+  3_months: 18000
+  6_months: 34800
+  12_months: 62400
+
+tis_prices:
+  audi: 6000
+  autotech: 1000
+  bmw: 5000
+  daf: 15000
+  fiat: 2000
+  gac: 2000
+  honda: 3000
+  hyundai: 2000
+  infiniti: 2000
+  kia: 2000
+  jaguar: 6000
+  land rover: 6000
+  mercedes-benz: 10000
+  nissan: 2000
+  opel: 3000
+  peugeot: 3000
+  citroen: 3000
+  porsche: 15000
+  renault: 4000
+  skoda: 6000
+  toyota: 5000
+  lexus: 5000
+  volkswagen: 6000
+  volvo: 10000
+  zeekr: 6000
+  lada: 2500
+  bobcat: 6000

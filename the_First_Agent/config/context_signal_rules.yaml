@@ -1,0 +1,231 @@
+rules:
+  - id: confirmed_legal_status_company
+    when_meaning_contains_any:
+      - "подтвердил, что является юридическим лицом"
+      - "является юридическим лицом"
+      - "подтверждает статус юридического лица"
+    semantic_flags:
+      - confirmed_legal_status
+    boost_topics:
+      - legal_entity_purchase_flow
+
+  - id: confirmed_legal_status_autobusiness
+    when_meaning_contains_any:
+      - "представителем автобизнеса"
+      - "представитель автобизнеса"
+      - "автобизнеса"
+    semantic_flags:
+      - confirmed_legal_status
+    boost_topics:
+      - legal_entity_purchase_flow
+
+  - id: denied_legal_status
+    when_meaning_contains_any:
+      - "отрицательно ответил"
+      - "не является юридическим лицом"
+      - "не является представителем автобизнеса"
+      - "не подтверждает статус"
+    semantic_flags:
+      - denied_legal_status
+    boost_topics:
+      - physical_person_purchase
+
+  - id: demo_context_from_gist
+    when_gist_contains_any:
+      - "демо"
+      - "тестового доступа"
+      - "пробного доступа"
+    semantic_flags:
+      - demo_context
+    continuity_topics:
+      - demo_access
+
+  - id: demo_context_from_meaning
+    when_meaning_contains_any:
+      - "демо"
+      - "тестовый доступ"
+      - "пробный доступ"
+    semantic_flags:
+      - demo_context
+    boost_topics:
+      - demo_access
+
+  - id: switch_to_tis
+    when_meaning_contains_any:
+      - "переключается на отдельный продукт tis"
+      - "только tis"
+      - "отдельный продукт tis"
+      - "подписку только на tis"
+    semantic_flags:
+      - switch_to_tis
+    boost_topics:
+      - tis_tariffs
+    penalty_topics:
+      - epc_tariffs
+
+  - id: tis_price_request
+    when_meaning_contains_any:
+      - "цену на продукт tis"
+      - "стоимость подписки на tis"
+      - "расчет стоимости подписки tis"
+      - "расчета стоимости подписки tis"
+    semantic_flags:
+      - price_requested
+    boost_topics:
+      - tis_tariffs
+
+  - id: epc_price_request
+    when_meaning_contains_any:
+      - "цену на продукт epc"
+      - "стоимость подписки на epc"
+      - "ежемесячную стоимость подписки"
+    semantic_flags:
+      - price_requested
+    boost_topics:
+      - epc_tariffs
+
+  - id: price_for_previous_product
+    when_meaning_contains_any:
+      - "цену на ранее упомянутый продукт"
+    semantic_flags:
+      - price_requested
+
+  - id: payment_without_details
+    when_meaning_contains_any:
+      - "отказывается указывать инн"
+      - "без реквизитов"
+      - "инн предоставить позже"
+      - "обойти обязательные данные"
+    semantic_flags:
+      - payment_without_details_like
+    boost_topics:
+      - payment_without_details
+      - legal_entity_purchase_flow
+
+  - id: legal_purchase_flow
+    when_meaning_contains_any:
+      - "процессе оформления покупки"
+      - "требуется ли инн для оплаты"
+      - "куда отправить инн"
+      - "договор"
+      - "счет"
+      - "счёт"
+      - "qr-коду"
+      - "qr коду"
+      - "способ оплаты"
+    semantic_flags:
+      - legal_purchase_flow_like
+    boost_topics:
+      - legal_entity_purchase_flow
+
+  - id: no_private_sales_reason
+    when_meaning_contains_any:
+      - "объяснение причины отказа"
+      - "причине отказа"
+      - "почему продажа только"
+      - "почему не продаете"
+    semantic_flags:
+      - no_private_sales_reason
+    boost_topics:
+      - no_private_sales_reason
+
+  - id: physical_purchase
+    when_meaning_contains_any:
+      - "приобретения подписки как частное лицо"
+      - "хочет купить как частное лицо"
+      - "хочет купить как физическое лицо"
+      - "не является юридическим лицом"
+    semantic_flags:
+      - physical_purchase
+    boost_topics:
+      - physical_person_purchase
+
+  - id: api_requested
+    when_meaning_contains_any:
+      - "api"
+      - "интеграц"
+      - "технического подключения"
+    semantic_flags:
+      - api_requested
+    boost_topics:
+      - api_integration
+
+  - id: operator_requested
+    when_meaning_contains_any:
+      - "просит переключить его на менеджера"
+      - "просит менеджера"
+      - "хочет человека"
+      - "оператора"
+    semantic_flags:
+      - human_requested
+    boost_topics:
+      - human_operator_request
+
+  - id: company_services_info
+    when_meaning_contains_any:
+      - "общее описание компании и ее услуг"
+      - "недостатках или ограничениях сервиса"
+      - "возможностях сервиса"
+      - "что умеет сервис"
+    semantic_flags:
+      - service_info_requested
+    boost_topics:
+      - company_services_info
+    penalty_topics:
+      - out_of_scope_request
+
+  - id: nonsense_noise
+    when_meaning_contains_any:
+      - "шумовое сообщение"
+      - "нерелевантный набор символов"
+      - "не имеющее смысла"
+      - "бессмысленный"
+    semantic_flags:
+      - noise_detected
+    boost_topics:
+      - nonsense_input
+    penalty_topics:
+      - out_of_scope_request
+
+  - id: abuse_negative
+    when_meaning_contains_any:
+      - "негативную оценку"
+      - "обвиняет компанию в мошенничестве"
+      - "выражает негативное отношение"
+      - "оскорб"
+    semantic_flags:
+      - abuse_detected
+    boost_topics:
+      - out_of_scope_request
+
+  - id: brand_list_requested
+    when_meaning_contains_any:
+      - "список брендов"
+      - "предоставил список брендов"
+      - "какие бренды"
+    semantic_flags:
+      - brand_list_requested
+    boost_topics:
+      - brand_list_request
+
+  - id: specific_brand_requested
+    when_meaning_contains_any:
+      - "конкретного бренда"
+      - "наличии бренда"
+      - "для bmw"
+      - "для volvo"
+      - "двух брендов"
+    semantic_flags:
+      - specific_brand_requested
+    boost_topics:
+      - specific_brand_check
+
+  - id: partial_catalog_context
+    when_meaning_contains_any:
+      - "только один бренд"
+      - "одна марка"
+      - "один бренд"
+    semantic_flags:
+      - partial_catalog_context
+    boost_topics:
+      - partial_catalog_request

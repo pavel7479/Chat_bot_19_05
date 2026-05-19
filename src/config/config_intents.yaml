@@ -1,0 +1,742 @@
+dialogue_state:
+  yes_words:
+    - "да"
+    - "yes"
+    - "yep"
+    - "ага"
+    - "являюсь"
+    - "ок"
+    - "ok"
+    - "подтверждаю"
+  no_words:
+    - "нет"
+    - "no"
+    - "nope"
+    - "неа"
+    - "не являюсь"
+    - "не являюсь представителем"
+  question_patterns:
+    - type: "demo_legal_check"
+      pattern: "((демо|demo|trial).*(юрид|автобизнес))|((юридическ\\w*\\s+лиц\\w*|представител\\w*\\s+автобизнес\\w*).*(демо|demo|trial))|((демо|demo|trial).*(представител\\w*\\s+автобизнес\\w*))"
+    - type: "legal_status_check"
+      pattern: "(вы\\s*(юр|юрид)|юридическ\\w*\\s+лиц\\w*)"
+    - type: "invoice_confirmation"
+      pattern: "(выставля|счет|сч[её]т|qr|реквизит)"
+    - type: "purchase_confirmation"
+      pattern: "(оформляем покупку|оформить покупку|как купить)"
+
+signals:
+  patterns:
+    domain:
+      - "\\b(каталог\\w*|доступ\\w*|подписк\\w*|epc|tis|инн|сч[её]т|qr|api|бренд\\w*|демо|мак|оплат\\w*)\\b"
+    api:
+      - "\\b(api|1с|интеграц|integration|crm|выгрузк)\\b"
+    tis:
+      - "\\b(tis|тис|tiss|тисс|тiс|тis|tис|tiс|техинфо|техническая информация|сервисная база)\\b"
+    epc:
+      - "\\b(epc|епс|ипс|епц|epс|ерс|узс)\\b"
+      - "\\b(на год|на месяц|в месяц|на 3 месяца)\\b"
+    price_objection:
+      - "\\b(дорого|дешевле|дешёвле|дороговато)\\b"
+    competitor:
+      - "\\b(конкурент|уйду)\\b"
+    demo:
+      - "\\b(демо|demo|trial|демка|демо доступ)\\b"
+    human:
+      - "\\b(человек\\w*|менеджер\\w*|оператор\\w*|робот\\w*|соедини\\w*)\\b"
+    company_services:
+      - "\\b(о компании|услуги|что умеет|умеет ваша система|чем ты мне можешь помочь|чем еще можете помочь|что ты умеешь|подскажи|подробнее|короче|еще\\s+короче|ещ[её]\\s+короче|в двух словах|какой каталог лучше|чем вы лучше|скидк\\w*|договор|карточк\\w*|документ\\w*|не подбираете напрямую|подбираете напрямую|нескольким людям|несколько сотрудников|несколько пользователей)\\b"
+    requisites:
+      - "\\b(инн|реквизит\\w*|сч[её]т\\w*|qr)\\b"
+    payment_method:
+      - "(оплат\\w*\\s+по\\s+карт\\w*|по\\s+карт\\w*|картой|оплата\\s+карт\\w*|по\\s*qr|по\\s+сч[её]т\\w*)"
+    payment_without_details:
+      - "(без инн|инн не дам|без реквиз|город не скажу|не дам|инн позже дам|позже дам инн)"
+    physical:
+      - "\\b(физ\\w*|частн\\w*)\\b"
+    no_private_reason:
+      - "(почему.*физ|почему нельзя)"
+    purchase_ready:
+      - "\\b(как купить|оформить покупку|готов\\w* купить|готов\\w* оплатить|хочу оплатить|оформляем|хочу купить|нужен доступ|покупк\\w*)\\b"
+      - "(просто доступ)"
+    brand_list:
+      - "\\b(какие бренды|список брендов|все бренды|перечень брендов)\\b"
+      - "^(а\\s+)?какие\\s+есть\\??$"
+      - "(по\\s+грузов\\w*\\s+что\\s+есть)"
+    partial_catalog:
+      - "(только один бренд|отдельные каталоги|только .* каталог)"
+    data_accuracy:
+      - "\\b(точн\\w*|актуальн\\w*|ошибк\\w*|устаревш\\w*|неверн\\w*)\\b"
+    free_catalog:
+      - "\\b(бесплатн\\w*|поставщик\\w*|в интернете)\\b"
+    free_access_request:
+      - "(дай\\s+бесплатн\\w*\\s+доступ|бесплатн\\w*\\s+доступ|бесплатн\\w*\\s+навсегда|бесплатно\\s+навсегда|free\\s+access)"
+    macos:
+      - "\\b(mac|macos|мак\\w*)\\b"
+    purchase_negative:
+      - "\\b(нет\\b|не сейчас|пока изучаю|позже(?!\\s*дам\\b)|не будем|не нужно)\\b"
+    closing:
+      - "\\b(спасибо|благодарю|благодарим|понял|поняла|понятно)\\b"
+    parts_selection:
+      - "\\b(подбер(и|ите|ите пожалуйста)|подобрат(ь|ь деталь)|артикул|номер детали|запчаст[ьи]|детал[ьи]|vin|вин)\\b"
+    out_of_scope_catalog:
+      - "\\b(космическ\\w*|корабл\\w*|велосипед\\w*|самокат\\w*|дрова)\\b"
+    post_payment_no_access:
+      - "(оплат\\w*.*(нет|не|без).*(доступ|вход|кабинет|открыва)|после\\s+оплат\\w*.*(нет|не).*(доступ|вход))"
+    post_payment_access_timing:
+      - "(после\\s+оплат\\w*.*(сразу|когда|как\\s+быстро).*(доступ|актив)|когда\\s+после\\s+оплат\\w*.*доступ)"
+    usage_limits:
+      - "(ограничен\\w*\\s+по\\s+запрос|лимит\\w*\\s+запрос|сколько\\s+запрос\\w*\\s+можно|безлимит\\w*)"
+    multi_device_access:
+      - "(с\\s+разных\\s+(компьютер|пк|устройств)|с\\s+другого\\s+компьютер|нескольк\\w*\\s+компьютер)"
+    manager_setup_support:
+      - "(кто\\s+поможет\\s+с\\s+настройк|консульт\\w*\\s+по\\s+настройк|вопрос\\w*\\s+по\\s+приложен|обучен\\w*\\s+по\\s+работе)"
+    phone_like:
+      - "\\b(телефон|номер|контакт|перезвон|позвон|связ[ьа])\\w*\\b"
+      - "\\b\\d{5,}\\b"
+  followup_price_pattern: "\\b(сколько|цена|стоит|на год|на месяц|в месяц)\\b"
+  epc_history_short_price_pattern: "\\b(сколько|цена|на год|на месяц)\\b"
+  api_rejection_pattern: "\\b(без api|без интеграц|api не нужен)\\b"
+
+semantic_slots:
+  patterns:
+    payment_method_card:
+      - "(оплат\\w*\\s+по\\s+карт\\w*|по\\s+карт\\w*|картой|банковск\\w*\\s+карт\\w*|по\\s*qr|qr\\s*код)"
+    company_documents_card:
+      - "(карточк\\w*\\s+(предприят|компан|организац)|карта\\s+предприят|карта\\s+компан|договор|документ\\w*)"
+    geo_map_request:
+      - "(карта\\s+филиал|географическ\\w*\\s+карт\\w*|где\\s+находит|локац\\w*\\s+офис|адрес\\w*\\s+филиал)"
+    company_services_overview:
+      - "(чем ты мне можешь помочь|что ты умеешь|подскажи|в двух словах|подробнее|короче|еще\\s+короче|ещ[её]\\s+короче|чем вы лучше|скидк\\w*)"
+    out_of_scope_catalog:
+      - "\\b(космическ\\w*|корабл\\w*|велосипед\\w*|самокат\\w*|дрова)\\b"
+    pricing_request:
+      - "\\b(сколько|цена|стоит|тариф|по деньгам|стоимость)\\b"
+    catalog_list_request:
+      - "(какие\\s+каталоги|какие\\s+марки|список\\s+бренд|какие\\s+есть)"
+    feature_comparison:
+      - "(чем\\s+отлич|разниц\\w*\\s+между|что\\s+лучше\\s+epc|что\\s+лучше\\s+tis)"
+    refund_policy:
+      - "(вернут\\w*\\s+деньг|возврат\\w*\\s+денег|refund|если\\s+не\\s+подошл|как\\s+вернуть\\s+деньги)"
+    post_payment_access:
+      - "(после\\s+оплат\\w*\\s+доступ\\w*\\s+сразу|когда\\s+после\\s+оплаты\\s+доступ)"
+    multi_user_access:
+      - "(нескольк\\w*\\s+сотрудник\\w*|нескольк\\w*\\s+пользоват\\w*|сколько\\s+доступов)"
+    post_payment_no_access_slot:
+      - "(оплат\\w*.*(нет|не|без).*(доступ|вход|кабинет|открыва)|после\\s+оплат\\w*.*(нет|не).*(доступ|вход))"
+    post_payment_access_timing_slot:
+      - "(после\\s+оплат\\w*.*(сразу|когда|как\\s+быстро).*(доступ|актив)|когда\\s+после\\s+оплат\\w*.*доступ)"
+    usage_limits_slot:
+      - "(ограничен\\w*\\s+по\\s+запрос|лимит\\w*\\s+запрос|сколько\\s+запрос\\w*\\s+можно|безлимит\\w*)"
+    multi_device_access_slot:
+      - "(с\\s+разных\\s+(компьютер|пк|устройств)|с\\s+другого\\s+компьютер|нескольк\\w*\\s+компьютер)"
+    manager_setup_support_slot:
+      - "(кто\\s+поможет\\s+с\\s+настройк|консульт\\w*\\s+по\\s+настройк|вопрос\\w*\\s+по\\s+приложен|обучен\\w*\\s+по\\s+работе)"
+    nonsense_input:
+      - "^\\s*[.]{1,3}\\s*$"
+      - "^\\s*[,!?;:-]{1,4}\\s*$"
+      - "^\\s*[\\W_]{2,}\\s*$"
+      - "^\\s*[а-яa-z]{1,3}\\s*\\d{1,3}\\s*$"
+      - "^\\s*[а-яa-z]{6,}\\d{2,}\\s*$"
+    abuse_message:
+      - "\\b(туп(и|ишь|ой)|мошенн(ик|ики)|идиот|бред|чушь|ужасно|отвратительно)\\b"
+
+normalization_profile: "guardrails"
+
+short_reply_mapping:
+  demo_legal_check:
+    "yes":
+      - "demo_access"
+      - "legal_entity_purchase_flow"
+    "no":
+      - "demo_access"
+      - "physical_person_purchase"
+  legal_status_check:
+    "yes":
+      - "legal_entity_purchase_flow"
+    "no":
+      - "physical_person_purchase"
+  invoice_confirmation:
+    "yes":
+      - "legal_entity_purchase_flow"
+    "no":
+      - "purchase_ready"
+  purchase_confirmation:
+    "yes":
+      - "purchase_ready"
+    "no":
+      - "purchase_ready"
+
+signal_topic_map:
+  api:
+    - "api_integration"
+  tis:
+    - "tis_tariffs"
+  epc:
+    - "epc_tariffs"
+  price_objection:
+    - "price_objection"
+  competitor:
+    - "competitor_choice"
+  demo:
+    - "demo_access"
+  human:
+    - "human_operator_request"
+  company_services:
+    - "company_services_info"
+  requisites:
+    - "legal_entity_purchase_flow"
+  payment_method:
+    - "legal_entity_purchase_flow"
+  payment_without_details:
+    - "payment_without_details"
+    - "legal_entity_purchase_flow"
+  physical:
+    - "physical_person_purchase"
+  no_private_reason:
+    - "no_private_sales_reason"
+  purchase_ready:
+    - "purchase_ready"
+  brand_list:
+    - "brand_list_request"
+  specific_brand:
+    - "specific_brand_check"
+  partial_catalog:
+    - "partial_catalog_request"
+  data_accuracy:
+    - "data_accuracy_doubt"
+  free_catalog:
+    - "free_catalog_comparison"
+  free_access_request:
+    - "demo_access"
+  macos:
+    - "macos_support"
+  parts_selection:
+    - "company_services_info"
+  out_of_scope_catalog:
+    - "out_of_scope_request"
+  post_payment_no_access:
+    - "post_payment_no_access"
+  post_payment_access_timing:
+    - "post_payment_access_timing"
+  usage_limits:
+    - "usage_limits"
+  multi_device_access:
+    - "multi_device_access"
+  manager_setup_support:
+    - "manager_setup_support"
+
+signal_topic_behavior:
+  out_of_scope_signal: "out_of_scope_catalog"
+  closing_signal: "closing"
+  domain_signal: "domain"
+  physical_client_topic: "physical_person_purchase"
+  legal_flow_topic: "legal_entity_purchase_flow"
+  payment_topic: "payment_without_details"
+  purchase_topic: "purchase_ready"
+  purchase_negative_signal: "purchase_negative"
+  service_signals:
+    - "company_services"
+    - "parts_selection"
+  service_topic: "company_services_info"
+  requisites_signal: "requisites"
+
+carryover_rules:
+  - required_topics: ["purchase_ready"]
+    required_signals: ["purchase_negative"]
+    drop_topics: ["legal_entity_purchase_flow", "payment_without_details"]
+  - add_topics: ["purchase_ready"]
+    query_pattern: "\\b(api|демо|тис|tis)\\b"
+    history_pattern: "(готов\\w* оплат|хочу купить|оформим|как купить|готов\\w* купить|готовы купить)"
+  - required_topics: ["epc_tariffs"]
+    query_pattern: "(подойдет.*как купить|подойд[её]т.*как купить|как купить|как оплатить|и как оплатить|оформ)"
+    history_pattern: "(epc|тис|tis|тариф|цена|месяц|год)"
+    add_topics: ["purchase_ready", "legal_entity_purchase_flow"]
+  - required_topics: ["purchase_ready"]
+    query_pattern: "(без api|api не нужен|без интеграц|просто доступ)"
+    history_pattern: "(api|интеграц|1с)"
+    add_topics: ["purchase_ready"]
+  - required_topics: ["human_operator_request"]
+    history_pattern: "(api|интеграц|1с)"
+    add_topics: ["api_integration"]
+  - required_topics: ["epc_tariffs"]
+    history_pattern: "(\\btis\\b|\\bтис\\b)"
+    add_topics: ["tis_tariffs"]
+  - required_topics: ["tis_tariffs"]
+    history_pattern: "(\\bepc\\b|\\bепс\\b|\\bепц\\b)"
+    add_topics: ["epc_tariffs"]
+  - required_topics: ["epc_tariffs"]
+    query_pattern: "(как оплатить|и как оплатить|как оформить|какие данные|данные отправить)"
+    history_pattern: "(tis|тис|итогов|итоговая сумма|добавьте)"
+    drop_topics: ["epc_tariffs"]
+    add_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+  - required_topics: ["nonsense_input"]
+    query_pattern: "(как оплатить|и как оплатить|как оформить|какие данные|данные отправить)"
+    history_pattern: "(инн|реквизит|сч[её]т|qr|оформ|купить|оплат)"
+    add_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["nonsense_input"]
+    query_pattern: "(на компанию|мы юрлицо|мы ип|на ип|оформим на ип|оформим на компанию)"
+    add_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["epc_tariffs"]
+    required_signals: ["requisites"]
+    add_topics: ["legal_entity_purchase_flow"]
+    drop_topics: ["epc_tariffs"]
+  - required_topics: ["purchase_ready"]
+    query_pattern: "(как купить|как оформить|оформим|оформля|как оплатить|какие данные|данные отправить)"
+    history_pattern: "(epc|тис|tis|тариф|цена|месяц|год|доступ)"
+    add_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["macos_support"]
+    history_pattern: "(хочу купить|купить доступ)"
+    history_not_pattern: "(ип|юр|юрид|инн|счет|сч[её]т|qr)"
+    add_topics: ["legal_status_unknown"]
+  - required_topics: ["physical_person_purchase"]
+    history_pattern: "(демо|demo|trial|демка)"
+    add_topics: ["demo_access"]
+  - required_topics: ["no_private_sales_reason"]
+    history_pattern: "(демо|demo|trial|демка)"
+    add_topics: ["demo_access"]
+  - required_topics: ["no_private_sales_reason"]
+    any_history_or_signal:
+      history_pattern: "(физ\\w*|частн\\w*)"
+      signal: "physical"
+    add_topics: ["physical_person_purchase"]
+  - required_topics: ["specific_brand_check"]
+    query_pattern: "(конкретно)"
+    history_pattern: "(какие бренды|список брендов|все бренды)"
+    add_topics: ["brand_list_request"]
+  - required_topics: ["data_accuracy_doubt"]
+    history_pattern: "(бесплатн\\w*|поставщик\\w*|в интернете)"
+    add_topics: ["free_catalog_comparison"]
+  - required_topics: ["competitor_choice"]
+    history_pattern: "(дорого|дешевле)"
+    add_topics: ["price_objection"]
+  - required_topics: ["epc_tariffs"]
+    history_pattern: "(конкурент|уйду)"
+    add_topics: ["competitor_choice"]
+  - required_topics: ["human_operator_request"]
+    history_pattern: "\\b(api|1с|интеграц|integration)\\b"
+    add_topics: ["api_integration"]
+  - required_topics: ["tis_tariffs"]
+    history_pattern: "(только один бренд|отдельные каталоги|только .* каталог)"
+    add_topics: ["partial_catalog_request"]
+  - required_topics: ["tis_tariffs"]
+    history_pattern: "(назовите бренды|бренды для расчета|бренды для расчёта)"
+    query_pattern: "\\b(bmw|audi|mercedec|wolksvagen|тайота|лексус|лекссс|хундай|kiaa|porsch|renauldt|pegeot|ауди|мерседес|фольцваген|шкода|toyota|lexus|porsche|hyundai|kia|zeekr|zeeker|зикер|лада|ваз|ваза|автоваз|bobcat|бобкат|бобкэт)\\b"
+    add_topics: ["specific_brand_check"]
+  - required_topics: ["demo_access"]
+    history_pattern: "\\b(tis|тис|tiss)\\b"
+    add_topics: ["tis_tariffs"]
+  - required_topics: ["physical_person_purchase"]
+    history_pattern: "\\b(tis|тис|tiss)\\b"
+    add_topics: ["tis_tariffs"]
+  - required_topics: ["price_objection"]
+    history_pattern: "(бесплатн\\w*|поставщик\\w*|в интернете)"
+    add_topics: ["free_catalog_comparison"]
+  - required_topics: ["company_services_info"]
+    any_history_or_query:
+      history_pattern: "(бесплатн\\w*|поставщик\\w*|в интернете)"
+      query_pattern: "(бесплатн\\w*|поставщик\\w*)"
+    add_topics: ["free_catalog_comparison"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    history_pattern: "(физ\\w*|частн\\w*)"
+    add_topics: ["physical_person_purchase"]
+  - required_topics: ["specific_brand_check"]
+    query_pattern: "(добавьте|посчита|общую сумму|итог)"
+    history_pattern: "(tis|тис|tiss)"
+    add_topics: ["tis_tariffs"]
+  - required_topics: ["purchase_ready"]
+    required_signals: ["parts_selection"]
+    drop_topics: ["purchase_ready"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    required_signals: ["company_services"]
+    drop_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["purchase_ready"]
+    required_signals: ["company_services"]
+    drop_topics: ["purchase_ready", "legal_entity_purchase_flow"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    query_pattern: "(куда ты меня оформлять|горячку не пори|мы шь[её]м одежд|редких пород рыб)"
+    drop_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["purchase_ready"]
+    query_pattern: "(куда ты меня оформлять|горячку не пори|мы шь[её]м одежд|редких пород рыб)"
+    drop_topics: ["purchase_ready", "legal_entity_purchase_flow"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["specific_brand_check"]
+    required_signals: ["parts_selection"]
+    drop_topics: ["specific_brand_check"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["company_services_info"]
+    required_signals: ["closing"]
+    drop_topics: ["company_services_info"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["company_services_info"]
+    query_pattern: "(спасибо|благодар|понял|понятно)"
+    drop_topics: ["company_services_info"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["purchase_ready"]
+    required_signals: ["out_of_scope_catalog"]
+    drop_topics: ["purchase_ready"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["specific_brand_check"]
+    required_signals: ["out_of_scope_catalog"]
+    drop_topics: ["specific_brand_check"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["brand_list_request"]
+    required_signals: ["out_of_scope_catalog"]
+    drop_topics: ["brand_list_request"]
+    add_topics: ["nonsense_input"]
+  - required_topics: ["purchase_ready"]
+    required_signals: ["phone_like"]
+    history_pattern: "(менеджер|оператор|человек|соедини|переключи|номер телефона|укажите.*номер)"
+    drop_topics: ["purchase_ready"]
+    add_topics: ["human_operator_request"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    required_signals: ["phone_like"]
+    history_pattern: "(менеджер|оператор|человек|соедини|переключи|номер телефона|укажите.*номер)"
+    drop_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    add_topics: ["human_operator_request"]
+  - required_topics: ["nonsense_input"]
+    required_signals: ["phone_like"]
+    history_pattern: "(менеджер|оператор|человек|соедини|переключи|номер телефона|укажите.*номер|корректн\\w*\\s+номер|11\\s*цифр)"
+    drop_topics: ["nonsense_input"]
+    add_topics: ["human_operator_request"]
+
+conflict_rules:
+  - required_topics: ["payment_without_details"]
+    add_topics: ["legal_entity_purchase_flow"]
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["api_integration", "purchase_ready"]
+    query_pattern: "(купить|доступ|оплат|оформ)"
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["no_private_sales_reason"]
+    required_signals: ["physical"]
+    add_topics: ["physical_person_purchase"]
+  - required_topics: ["demo_access"]
+    required_signals: ["no_private_reason"]
+    add_topics: ["no_private_sales_reason"]
+  - required_topics: ["competitor_choice", "price_objection"]
+    query_pattern: "(уйду|выберу).*(дешевл|конкурент)"
+    drop_topics: ["price_objection"]
+  - required_topics: ["api_integration", "purchase_ready"]
+    query_pattern: "(без api|api не нужен|без интеграц)"
+    drop_topics: ["api_integration"]
+  - required_topics: ["api_integration", "purchase_ready"]
+    query_pattern: "(интеграц|api|1с)"
+    history_pattern: "^(?!.*(готов\\w*|купить|оплат|оформ)).*$"
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["no_private_sales_reason", "physical_person_purchase"]
+    query_pattern: "^(?!.*(почему|причин|зачем)).*$"
+    history_pattern: ".*(tis|тис|tiss).*"
+    drop_topics: ["no_private_sales_reason"]
+    add_topics: ["tis_tariffs"]
+  - required_topics: ["no_private_sales_reason", "physical_person_purchase"]
+    required_signals: ["no_private_reason"]
+    drop_topics: ["physical_person_purchase"]
+  - required_topics: ["payment_without_details", "legal_entity_purchase_flow"]
+    query_pattern: "(город не скажу)"
+    drop_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["human_operator_request", "epc_tariffs"]
+    drop_topics: ["epc_tariffs"]
+  - required_topics: ["human_operator_request", "tis_tariffs"]
+    drop_topics: ["tis_tariffs"]
+  - required_topics: ["human_operator_request"]
+    query_pattern: "(не подбираете напрямую|подбираете напрямую|подбор деталей)"
+    history_pattern: "(подбор деталей выполняется|чат-бот не подбирает запчасти)"
+    drop_topics: ["human_operator_request"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["legal_entity_purchase_flow", "epc_tariffs"]
+    required_signals: ["payment_method"]
+    drop_topics: ["epc_tariffs"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    history_pattern: "(договор|карточк|документ)"
+    query_pattern: "(инн|телефон|контакт|\\+?\\d{5,}|[0-9]{5,})"
+    drop_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["nonsense_input"]
+    history_pattern: "(договор|карточк|документ)"
+    query_pattern: "(договор|карточк|документ|повтори|какие.*документ|инн|телефон|контакт|\\+?\\d{5,}|[0-9]{5,})"
+    drop_topics: ["nonsense_input"]
+    add_topics: ["company_services_info"]
+  - required_topics: ["company_services_info", "epc_tariffs"]
+    drop_topics: ["epc_tariffs"]
+  - required_topics: ["company_services_info", "price_objection"]
+    required_signals: ["company_services"]
+    drop_topics: ["price_objection"]
+  - required_topics: ["post_payment_no_access", "price_objection"]
+    required_signals: ["post_payment_no_access"]
+    drop_topics: ["price_objection"]
+  - required_topics: ["brand_list_request", "nonsense_input"]
+    required_signals: ["brand_list"]
+    drop_topics: ["nonsense_input"]
+  - required_topics: ["company_services_info", "nonsense_input"]
+    required_signals: ["company_services"]
+    drop_topics: ["nonsense_input"]
+  - required_topics: ["company_services_info", "legal_entity_purchase_flow"]
+    history_pattern: "(договор|карточк|документ)"
+    query_pattern: "(инн|телефон|контакт|\\+?\\d{5,}|[0-9]{5,})"
+    drop_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["company_services_info", "free_catalog_comparison"]
+    drop_topics: ["company_services_info"]
+  - required_topics: ["free_catalog_comparison", "nonsense_input"]
+    drop_topics: ["nonsense_input"]
+  - required_topics: ["free_catalog_comparison", "demo_access"]
+    required_signals: ["free_access_request"]
+    drop_topics: ["free_catalog_comparison"]
+  - required_topics: ["no_private_sales_reason", "demo_access", "physical_person_purchase"]
+    drop_topics: ["physical_person_purchase"]
+  - required_topics: ["tis_tariffs", "purchase_ready"]
+    history_pattern: "(только один бренд|отдельные бренды не продаются|отдельно можно купить только tis)"
+    drop_topics: ["purchase_ready"]
+    add_topics: ["partial_catalog_request"]
+  - required_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    query_pattern: "(qr|сч[её]т|счет|оплат[а-я]*)"
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["legal_entity_purchase_flow", "purchase_ready"]
+    history_pattern: "(физ\\w*|частн\\w*)"
+    drop_topics: ["purchase_ready"]
+    add_topics: ["physical_person_purchase"]
+  - required_topics: ["purchase_ready", "legal_entity_purchase_flow"]
+    required_signals: ["purchase_negative"]
+    drop_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["legal_entity_purchase_flow"]
+    required_signals: ["purchase_negative"]
+    drop_topics: ["legal_entity_purchase_flow"]
+    add_topics: ["purchase_ready"]
+  - required_topics: ["payment_without_details"]
+    required_signals: ["purchase_negative"]
+    drop_topics: ["payment_without_details"]
+    add_topics: ["purchase_ready"]
+  - required_topics: ["macos_support", "purchase_ready", "legal_entity_purchase_flow"]
+    required_signals: ["macos"]
+    drop_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["macos_support", "purchase_ready"]
+    history_not_pattern: "(купить|покупк|доступ|оформ|инн|сч[её]т|счет|qr|оплат)"
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["no_private_sales_reason"]
+    history_pattern: ".*(демо|demo|trial|демка).*"
+    add_topics: ["demo_access"]
+  - required_topics: ["macos_support", "legal_status_unknown"]
+    history_pattern: ".*(инн|сч[её]т|счет|телефон|выставления счета).*"
+    drop_topics: ["legal_status_unknown"]
+    add_topics: ["purchase_ready"]
+  - required_topics: ["partial_catalog_request", "epc_tariffs"]
+    forbidden_signals: ["epc"]
+    drop_topics: ["epc_tariffs"]
+  - required_topics: ["tis_tariffs", "specific_brand_check"]
+    history_pattern: "(только один бренд|отдельные бренды не продаются|отдельно можно купить только tis|отдельные каталоги)"
+    add_topics: ["partial_catalog_request"]
+    drop_topics: ["specific_brand_check"]
+  - required_topics: ["specific_brand_check", "brand_list_request"]
+    query_not_pattern: "(какие бренды|список брендов|все бренды|перечень брендов|конкретно)"
+    drop_topics: ["brand_list_request"]
+  - required_topics: ["specific_brand_check", "purchase_ready"]
+    required_signals: ["specific_brand"]
+    forbidden_signals: ["requisites"]
+    drop_topics: ["purchase_ready"]
+  - required_topics: ["specific_brand_check", "legal_entity_purchase_flow"]
+    required_signals: ["specific_brand"]
+    query_not_pattern: "(как оплат|данные|инн|сч[её]т|счет|qr)"
+    drop_topics: ["legal_entity_purchase_flow"]
+  - required_topics: ["company_services_info", "physical_person_purchase"]
+    required_signals: ["closing"]
+    drop_topics: ["company_services_info"]
+  - required_topics: ["company_services_info", "nonsense_input"]
+    required_signals: ["closing"]
+    drop_topics: ["company_services_info"]
+  - required_topics: ["company_services_info"]
+    query_pattern: "(спасибо|благодар|понял|понятно)"
+    drop_topics: ["company_services_info"]
+    add_topics: ["nonsense_input"]
+
+planner:
+  focus_to_action:
+    compare_epc_tis: "compare_epc_tis"
+    tis_tariffs: "tis_tariffs"
+    epc_tariffs: "epc_tariffs"
+    macos_support: "macos_support"
+    company_services_documents: "company_services_documents"
+    company_services: "company_services"
+    parts_selection_not_supported: "parts_selection_not_supported"
+    out_of_scope_response: "out_of_scope_response"
+    brand_availability: "brand_availability"
+    demo_policy: "demo_policy"
+    purchase_entry: "ask_legal_status"
+    payment_flow: "request_requisites"
+    human_operator_request: "human_operator"
+    api_integration: "api_unavailable"
+  topic_fallback_actions:
+    no_private_sales_reason: "physical_reject_reason"
+    physical_person_purchase: "physical_reject"
+    partial_catalog_request: "partial_catalog_restriction"
+    demo_access: "demo_policy"
+    payment_without_details: "request_requisites"
+    legal_entity_purchase_flow: "request_requisites"
+    epc_tariffs: "epc_tariffs"
+    tis_tariffs: "tis_tariffs"
+    specific_brand_check: "brand_availability"
+    brand_list_request: "brand_availability"
+    competitor_choice: "price_objection"
+    price_objection: "price_objection"
+    company_services_info: "company_services"
+    free_catalog_comparison: "free_catalog_comparison"
+    post_payment_no_access: "post_payment_no_access_handoff"
+    post_payment_access_timing: "post_payment_access_info"
+    usage_limits: "usage_limits_info"
+    multi_device_access: "multi_device_access_info"
+    manager_setup_support: "manager_setup_support_info"
+    purchase_ready: "ask_legal_status"
+    nonsense_input: "clarify_request"
+    out_of_scope_request: "out_of_scope_response"
+  action_to_flow:
+    compare_epc_tis: { flow_name: "pricing", flow_step: "compare" }
+    tis_tariffs: { flow_name: "pricing", flow_step: "tis" }
+    epc_tariffs: { flow_name: "pricing", flow_step: "epc" }
+    macos_support: { flow_name: "product_support", flow_step: "macos" }
+    company_services_documents: { flow_name: "company_documents", flow_step: "clarify_documents" }
+    company_services: { flow_name: "company_services", flow_step: "overview" }
+    parts_selection_not_supported: { flow_name: "company_services", flow_step: "parts_not_supported" }
+    out_of_scope_response: { flow_name: "out_of_scope", flow_step: "reject" }
+    brand_availability: { flow_name: "brand_check", flow_step: "availability" }
+    demo_policy: { flow_name: "demo", flow_step: "policy" }
+    request_requisites: { flow_name: "checkout", flow_step: "collect_requisites" }
+    ask_legal_status: { flow_name: "checkout", flow_step: "ask_legal_status" }
+    human_operator: { flow_name: "manager_handoff", flow_step: "offer_chat_first" }
+    human_operator_collect_phone: { flow_name: "manager_handoff", flow_step: "collect_phone" }
+    human_operator_phone_invalid: { flow_name: "manager_handoff", flow_step: "validate_phone" }
+    human_operator_phone_confirm: { flow_name: "manager_handoff", flow_step: "handoff_confirmed" }
+    api_unavailable: { flow_name: "api", flow_step: "api_unavailable" }
+    api_then_purchase: { flow_name: "api", flow_step: "fallback_to_checkout" }
+    physical_reject: { flow_name: "eligibility", flow_step: "reject_physical" }
+    physical_reject_reason: { flow_name: "eligibility", flow_step: "explain_restriction" }
+    clarify_request: { flow_name: "clarification", flow_step: "ask_clarify" }
+    post_payment_no_access_handoff: { flow_name: "post_payment_support", flow_step: "handoff_manager" }
+    post_payment_access_info: { flow_name: "post_payment_support", flow_step: "access_timing_info" }
+    usage_limits_info: { flow_name: "usage_policy", flow_step: "limits_info" }
+    multi_device_access_info: { flow_name: "usage_policy", flow_step: "multi_device_info" }
+    manager_setup_support_info: { flow_name: "onboarding_support", flow_step: "manager_setup_info" }
+
+ranking:
+  policy:
+    llm_topic_bonus: 2
+    signal_bonus_score: 3
+    locked_topic_bonus: 100
+    other_with_domain_penalty: 100
+    max_topics_default: 1
+    max_topics_explicit_multi: 2
+    multi_intent_mode: "controlled_dual"
+    dual_min_each_score: 1
+    dual_min_combined_score: 4
+  priority:
+    payment_without_details: 10
+    legal_entity_purchase_flow: 9
+    physical_person_purchase: 8
+    api_integration: 8
+    tis_tariffs: 8
+    epc_tariffs: 8
+    demo_access: 7
+    purchase_ready: 7
+    macos_support: 7
+    price_objection: 6
+    competitor_choice: 6
+    specific_brand_check: 7
+    brand_list_request: 5
+    partial_catalog_request: 5
+    company_services_info: 5
+    data_accuracy_doubt: 5
+    free_catalog_comparison: 5
+    human_operator_request: 5
+    post_payment_no_access: 8
+    post_payment_access_timing: 7
+    usage_limits: 7
+    multi_device_access: 7
+    manager_setup_support: 7
+    no_private_sales_reason: 5
+    legal_status_unknown: 4
+    nonsense_input: 0
+    out_of_scope_request: 0
+  signal_bonus:
+    partial_catalog:
+      - "partial_catalog_request"
+    specific_brand:
+      - "specific_brand_check"
+    brand_list:
+      - "brand_list_request"
+    tis:
+      - "tis_tariffs"
+    epc:
+      - "epc_tariffs"
+    macos:
+      - "macos_support"
+    api:
+      - "api_integration"
+    demo:
+      - "demo_access"
+    price_objection:
+      - "price_objection"
+    competitor:
+      - "competitor_choice"
+    free_catalog:
+      - "free_catalog_comparison"
+    requisites:
+      - "legal_entity_purchase_flow"
+  explicit_dual_pairs:
+    - ["payment_without_details", "legal_entity_purchase_flow"]
+    - ["purchase_ready", "legal_entity_purchase_flow"]
+    - ["demo_access", "physical_person_purchase"]
+    - ["demo_access", "legal_entity_purchase_flow"]
+    - ["no_private_sales_reason", "demo_access"]
+    - ["specific_brand_check", "brand_list_request"]
+    - ["data_accuracy_doubt", "free_catalog_comparison"]
+    - ["partial_catalog_request", "tis_tariffs"]
+    - ["tis_tariffs", "physical_person_purchase"]
+    - ["tis_tariffs", "specific_brand_check"]
+    - ["api_integration", "purchase_ready"]
+    - ["macos_support", "legal_status_unknown"]
+    - ["macos_support", "purchase_ready"]
+    - ["competitor_choice", "price_objection"]
+    - ["epc_tariffs", "tis_tariffs"]
+    - ["tis_tariffs", "demo_access"]
+    - ["human_operator_request", "api_integration"]
+    - ["no_private_sales_reason", "physical_person_purchase"]
+    - ["epc_tariffs", "competitor_choice"]
+    - ["price_objection", "free_catalog_comparison"]
+    - ["legal_entity_purchase_flow", "physical_person_purchase"]
+    - ["epc_tariffs", "legal_entity_purchase_flow"]
+    - ["tis_tariffs", "legal_entity_purchase_flow"]
+    - ["payment_without_details", "physical_person_purchase"]
+  allowed_dual_pairs:
+    - ["payment_without_details", "legal_entity_purchase_flow"]
+    - ["purchase_ready", "legal_entity_purchase_flow"]
+    - ["demo_access", "physical_person_purchase"]
+    - ["demo_access", "legal_entity_purchase_flow"]
+    - ["no_private_sales_reason", "demo_access"]
+    - ["specific_brand_check", "brand_list_request"]
+    - ["data_accuracy_doubt", "free_catalog_comparison"]
+    - ["partial_catalog_request", "tis_tariffs"]
+    - ["tis_tariffs", "physical_person_purchase"]
+    - ["tis_tariffs", "specific_brand_check"]
+    - ["api_integration", "purchase_ready"]
+    - ["macos_support", "purchase_ready"]
+    - ["competitor_choice", "price_objection"]
+    - ["epc_tariffs", "tis_tariffs"]
+    - ["tis_tariffs", "demo_access"]
+    - ["human_operator_request", "api_integration"]
+    - ["no_private_sales_reason", "physical_person_purchase"]
+    - ["epc_tariffs", "competitor_choice"]
+    - ["price_objection", "free_catalog_comparison"]
+    - ["legal_entity_purchase_flow", "physical_person_purchase"]
+    - ["epc_tariffs", "legal_entity_purchase_flow"]
+    - ["tis_tariffs", "legal_entity_purchase_flow"]
+  explicit_multi_intent_markers:
+    - "и еще"
+    - "и ещё"
+    - "а еще"
+    - "а ещё"
+    - "а также"
+    - "и также"
+    - "плюс"
+    - "либо"
+    - "и при этом"

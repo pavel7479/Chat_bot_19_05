@@ -1,0 +1,708 @@
+facts:
+  - fact_id: "legal_only_policy"
+    topic: "purchase_ready"
+    subtopic: "legal_gate"
+    entity_type: "policy"
+    entity: "legal_only"
+    text: "Мы работаем только с юридическими лицами и ИП. Подскажите, пожалуйста, вы представитель юридического лица?"
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["хочу купить доступ", "купить доступ", "оформить доступ"]
+    action_tags: ["ask_legal_status"]
+
+  - fact_id: "purchase_required_data"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "business_checkout"
+    entity_type: "action"
+    entity: "request_requisites"
+    text: "Для оформления доступа, пожалуйста, пришлите ИНН вашей компании, телефон, имя контактного лица, желаемый период и количество доступов. Также уточните способ оплаты: выставить счет или оплатить по QR."
+    fact_type: "knowledge"
+    section_tag: "checkout_steps"
+    priority: 10
+    aliases: ["как купить", "как оформить", "оформляйте", "хочу купить", "купить", "какие данные", "оплата"]
+    action_tags: ["request_requisites"]
+
+  - fact_id: "manager_handoff_after_requisites"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "checkout_ready"
+    entity_type: "action"
+    entity: "manager_handoff"
+    text: "Спасибо, данные получил. Передам их менеджеру, и он свяжется с вами для оформления и уточнения деталей."
+    fact_type: "knowledge"
+    section_tag: "checkout_steps"
+    priority: 11
+    aliases: ["телефон отправил", "инн и телефон", "по счету", "на 1 год", "для 1 пользователя"]
+    action_tags: ["manager_handoff_ready"]
+
+  - fact_id: "existing_contract_check_request_number"
+    topic: "existing_contract_check"
+    subtopic: "contract_check"
+    entity_type: "policy"
+    entity: "existing_contract"
+    text: "Для проверки существующего договора, пожалуйста, пришлите номер договора. Я передам запрос менеджеру для проверки."
+    fact_type: "knowledge"
+    section_tag: "documents"
+    priority: 11
+    aliases: ["проверить договор", "существующий договор", "номер договора", "статус договора"]
+    action_tags: ["existing_contract_check"]
+
+  - fact_id: "self_employed_policy"
+    topic: "self_employed_purchase"
+    subtopic: "legal_policy"
+    entity_type: "policy"
+    entity: "self_employed"
+    text: "Мы работаем с юридическими лицами и ИП. Самозанятые не подходят, если нет статуса ИП."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 11
+    aliases: ["самозанятый", "самозанятыми", "самозанятых"]
+    action_tags: ["self_employed_policy"]
+
+  - fact_id: "subscription_renewal_policy"
+    topic: "subscription_renewal"
+    subtopic: "renewal"
+    entity_type: "policy"
+    entity: "renewal"
+    text: "Для продления напишите менеджеру или пришлите данные текущего доступа и организации, и мы подскажем дальнейшие шаги по продлению."
+    fact_type: "knowledge"
+    section_tag: "renewal"
+    priority: 10
+    aliases: ["как продлить подписку", "продление подписки", "продлить доступ"]
+    action_tags: ["subscription_renewal"]
+
+  - fact_id: "payment_process_policy"
+    topic: "payment_process"
+    subtopic: "payment"
+    entity_type: "policy"
+    entity: "payment"
+    text: "Оплата возможна по счету или QR/карте в рамках оформления. Для счета понадобятся реквизиты компании."
+    fact_type: "knowledge"
+    section_tag: "payment"
+    priority: 10
+    aliases: ["как оплатить", "способы оплаты", "можно картой", "по счету", "по qr"]
+    action_tags: ["payment_process"]
+
+  - fact_id: "api_then_purchase_flow"
+    topic: "api_integration"
+    subtopic: "fallback_purchase"
+    entity_type: "script"
+    entity: "api_then_purchase"
+    text: "Интеграция по API сейчас не поддерживается. Если оформляем обычный доступ, пришлите ИНН, телефон, имя, период и количество доступов; оплата возможна по счету или по QR."
+    fact_type: "knowledge"
+    section_tag: "integration"
+    priority: 11
+    aliases: ["api нет и как купить", "без api как оформить", "тогда оформить доступ", "api then buy"]
+    action_tags: ["api_then_purchase"]
+
+  - fact_id: "api_not_available"
+    topic: "api_integration"
+    subtopic: "limitations"
+    entity_type: "policy"
+    entity: "api"
+    text: "На текущий момент интеграция по API в сторонние системы (включая 1С) не поддерживается. Доступ предоставляется через наш сервис."
+    fact_type: "knowledge"
+    section_tag: "integration"
+    priority: 10
+    aliases: ["api", "1с", "интеграция", "integration"]
+    action_tags: ["api_unavailable"]
+
+  - fact_id: "demo_policy"
+    topic: "demo_access"
+    subtopic: "eligibility"
+    entity_type: "policy"
+    entity: "demo"
+    text: "Демо-доступ возможен для юридических лиц и ИП. Подтвердите, пожалуйста, ваш юридический статус, и я продолжу оформление."
+    fact_type: "knowledge"
+    section_tag: "demo"
+    priority: 9
+    aliases: ["демо", "demo", "trial", "демо доступ"]
+    action_tags: ["demo_policy"]
+
+  - fact_id: "physical_reject"
+    topic: "physical_person_purchase"
+    subtopic: "restrictions"
+    entity_type: "policy"
+    entity: "physical"
+    text: "К сожалению, доступ частным лицам мы не продаем. Работаем только с юридическими лицами и ИП."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["я физлицо", "физлицо", "частное лицо", "я не ип", "хочу купить как физик", "а если физлицо"]
+    action_tags: ["physical_reject"]
+
+  - fact_id: "physical_reject_reason"
+    topic: "no_private_sales_reason"
+    subtopic: "restrictions_reason"
+    entity_type: "policy"
+    entity: "physical_reason"
+    text: "Мы не продаем доступ физическим лицам, потому что сервис ориентирован на профессиональный автобизнес. Работаем только с юридическими лицами и ИП."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["почему не физлицам", "почему не продаете физическим лицам", "причина отказа физлицу"]
+    action_tags: ["physical_reject_reason"]
+
+  - fact_id: "macos_support"
+    topic: "macos_support"
+    subtopic: "platform"
+    entity_type: "support"
+    entity: "macos"
+    text: "На macOS отдельного приложения нет, работа выполняется через браузер. Функциональность каталога при этом сохраняется."
+    fact_type: "knowledge"
+    section_tag: "platform"
+    priority: 9
+    aliases: ["мак", "mac", "macos", "на маке", "на mac"]
+    action_tags: ["macos_support"]
+
+  - fact_id: "epc_tariffs"
+    topic: "epc_tariffs"
+    subtopic: "price"
+    entity_type: "pricing"
+    entity: "epc"
+    text: "Для EPC Full доступны тарифы на 1, 3, 6 и 12 месяцев. Если нужен точный расчет по периоду, сообщите срок, и я сразу покажу стоимость."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 9
+    aliases: ["сколько стоит epc", "epc", "на 3 месяца", "тариф epc"]
+    action_tags: ["epc_tariffs"]
+
+  - fact_id: "epc_price_general"
+    topic: "epc_tariffs"
+    subtopic: "pricing_overview"
+    entity_type: "pricing"
+    entity: "epc"
+    text: "EPC Full доступен на 1, 3, 6 и 12 месяцев. Ниже сразу показываю тарифы по периодам."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 10
+    aliases: ["сколько стоит подписка", "стоимость подписки", "цена доступа"]
+    action_tags: ["epc_tariffs", "pricing_summary"]
+
+  - fact_id: "human_operator_reply"
+    topic: "human_operator_request"
+    subtopic: "handoff"
+    entity_type: "script"
+    entity: "human_operator"
+    text: "Я могу оперативно предоставить вам всю информацию прямо в чате. Если останутся вопросы, подключу менеджера."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 8
+    aliases: ["позовите человека", "оператор", "менеджер", "человек"]
+    action_tags: ["human_operator"]
+
+  - fact_id: "human_operator_collect_phone"
+    topic: "human_operator_request"
+    subtopic: "handoff"
+    entity_type: "script"
+    entity: "human_operator_phone"
+    text: "Чтобы передать запрос менеджеру, пожалуйста, укажите ваш номер телефона. После этого с вами свяжется наш менеджер."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 9
+    aliases: ["все равно позовите менеджера", "соедините с менеджером", "хочу менеджера"]
+    action_tags: ["human_operator_collect_phone"]
+
+  - fact_id: "human_operator_phone_invalid"
+    topic: "human_operator_request"
+    subtopic: "handoff_phone_validation"
+    entity_type: "script"
+    entity: "human_operator_phone_invalid"
+    text: "Пожалуйста, укажите корректный номер телефона: должно быть 11 цифр."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 10
+    aliases: ["телефон", "номер", "контакт"]
+    action_tags: ["human_operator_phone_invalid"]
+
+  - fact_id: "human_operator_phone_confirm"
+    topic: "human_operator_request"
+    subtopic: "handoff_phone_validation"
+    entity_type: "script"
+    entity: "human_operator_phone_confirm"
+    text: "Спасибо! Номер принят. Наш менеджер свяжется с вами в ближайшее время."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 10
+    aliases: ["телефон", "номер", "контакт"]
+    action_tags: ["human_operator_phone_confirm"]
+
+  - fact_id: "human_operator_conflict_or_abuse"
+    topic: "human_operator_request"
+    subtopic: "conflict_or_abuse"
+    entity_type: "script"
+    entity: "human_operator_conflict"
+    text: "Если клиент резко недоволен, обвиняет компанию или конфликтует с ботом, нужно отвечать спокойно, не спорить и предложить передать обращение менеджеру."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 11
+    aliases: ["вы мошенники", "ты тупишь", "развод", "обман", "жалоба"]
+    action_tags: ["human_operator"]
+
+  - fact_id: "parts_selection_not_supported"
+    topic: "company_services_info"
+    subtopic: "limitations"
+    entity_type: "policy"
+    entity: "parts_selection"
+    text: "Подбор деталей выполняется через наши каталоги. Чат-бот не подбирает запчасти напрямую, но подскажу, какой каталог лучше использовать."
+    fact_type: "knowledge"
+    section_tag: "limitations"
+    priority: 9
+    aliases: ["подбери деталь", "подберите запчасть", "номер детали", "артикул"]
+    action_tags: ["parts_selection_not_supported"]
+
+  - fact_id: "company_services_general"
+    topic: "company_services_info"
+    subtopic: "capabilities"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Сервис помогает автобизнесу работать с каталогами запчастей и технической информацией. Могу кратко рассказать о возможностях системы, сценариях использования и ограничениях."
+    fact_type: "knowledge"
+    section_tag: "services"
+    semantic_group: "service_intro"
+    priority: 11
+    aliases: ["чем ты можешь помочь", "что ты умеешь", "подскажи", "возможности", "расскажите о компании и услугах", "что умеет система", "как работает сервис"]
+    action_tags: ["company_services"]
+
+  - fact_id: "company_services_competitor_discount"
+    topic: "company_services_info"
+    subtopic: "value"
+    entity_type: "script"
+    entity: "company_services"
+    text: "К ключевым преимуществам сервиса относятся актуальные данные, стабильная работа и поддержка рабочих сценариев автобизнеса."
+    fact_type: "knowledge"
+    section_tag: "value"
+    semantic_group: "service_value"
+    priority: 11
+    aliases: ["чем лучше конкурентов", "почему вы лучше", "скидки", "заинтересовать как клиента"]
+    action_tags: ["company_services"]
+
+  - fact_id: "competitor_comparison_advantages"
+    topic: "competitor_comparison"
+    subtopic: "advantages"
+    entity_type: "comparison"
+    entity: "competitors"
+    text: "Наше отличие от конкурентов — актуальность данных, полнота информации, стабильная работа сервиса, поддержка менеджеров и ориентация на рабочие сценарии автобизнеса."
+    fact_type: "knowledge"
+    section_tag: "value"
+    priority: 11
+    aliases: ["в чем отличие от конкурентов", "чем вы лучше конкурентов", "почему выбрать вас"]
+    action_tags: ["competitor_comparison"]
+
+  - fact_id: "company_services_cons"
+    topic: "company_services_info"
+    subtopic: "limitations"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Сервис рассчитан на профессиональное использование в автобизнесе. Для работы требуется понимание каталогов и технической документации, а часть функций и подключение оформляются через стандартный процесс доступа."
+    fact_type: "knowledge"
+    section_tag: "limitations"
+    semantic_group: "service_limits"
+    priority: 10
+    aliases: ["какие минусы", "какие ограничения", "что неудобно", "минусы сервиса"]
+    action_tags: ["company_services"]
+
+  - fact_id: "company_services_documents"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "documents"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Можем передать запрос на договор и карточку предприятия. Пришлите контактные данные, и менеджер направит документы."
+    fact_type: "knowledge"
+    section_tag: "documents"
+    priority: 10
+    aliases: ["договор", "карточка предприятия", "карточка компании", "документы компании"]
+    action_tags: ["company_services_documents"]
+
+  - fact_id: "partial_catalog_restriction"
+    topic: "partial_catalog_request"
+    subtopic: "availability_policy"
+    entity_type: "policy"
+    entity: "partial_catalog"
+    text: "EPC Full по отдельным брендам не продается: он доступен только полным пакетом. Если нужен доступ по конкретной марке, можно рассмотреть TIS по нужному бренду."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["только один бренд", "один бренд", "отдельные каталоги", "только один каталог"]
+    action_tags: ["partial_catalog_restriction"]
+
+  - fact_id: "demo_legal_followup"
+    topic: "demo_access"
+    subtopic: "followup"
+    entity_type: "script"
+    entity: "demo_confirmation"
+    text: "Отлично, для юридических лиц и ИП демо-доступ доступен. Если хотите, сразу подскажу условия и затем перейдем к оформлению."
+    fact_type: "knowledge"
+    section_tag: "demo"
+    priority: 9
+    aliases: ["да, мы юрлицо", "мы ип", "мы юридическое лицо", "являемся ип"]
+    action_tags: ["demo_policy"]
+
+  - fact_id: "brand_availability_general"
+    topic: "catalog_list_request"
+    subtopic: "catalog_types"
+    entity_type: "catalog"
+    entity: "products"
+    text: "У нас есть два типа каталогов: EPC Full — каталог оригинальных запчастей и схем; TIS — техническая документация и инструкции по ремонту. При необходимости могу подробнее рассказать по каждому варианту."
+    fact_type: "knowledge"
+    section_tag: "catalog_overview"
+    priority: 11
+    aliases: ["какие каталоги есть", "что у вас есть", "какие продукты есть", "какие типы каталогов доступны"]
+    action_tags: ["catalog_list_info"]
+
+  - fact_id: "catalog_list_products"
+    topic: "catalog_list_request"
+    subtopic: "catalog_types"
+    entity_type: "catalog"
+    entity: "products"
+    text: "У нас есть два продукта: EPC Full и TIS. EPC Full — каталог оригинальных запчастей и схем. TIS — техническая документация и инструкции по ремонту."
+    fact_type: "knowledge"
+    section_tag: "catalog_overview"
+    semantic_group: "catalog_products"
+    priority: 12
+    aliases: ["какие каталоги есть", "что у вас есть", "какие продукты есть", "какие типы каталогов доступны"]
+    action_tags: ["catalog_list_info"]
+
+  - fact_id: "brand_group_clarification_need_specific_brand"
+    topic: "specific_brand_check"
+    subtopic: "brand_group_not_supported"
+    entity_type: "policy"
+    entity: "brand_group"
+    text: "Группы брендов вроде VAG мы не поддерживаем. Уточните, пожалуйста, конкретную марку автомобиля."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 11
+    aliases: ["vag", "ваг", "группа брендов"]
+    action_tags: ["brand_group_clarification"]
+
+  - fact_id: "unknown_brand_unavailable_catalogs"
+    topic: "specific_brand_check"
+    subtopic: "unknown_brand"
+    entity_type: "policy"
+    entity: "unknown_brand"
+    text: "Такого бренда в текущем списке нет. У нас есть два продукта: EPC Full и TIS. Если подскажете поддерживаемую конкретную марку, я сразу проверю наличие и цену."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 11
+    aliases: ["неизвестный бренд", "нет такого бренда"]
+    action_tags: ["unknown_brand_unavailable"]
+
+  - fact_id: "brand_list_overview"
+    topic: "brand_list_request"
+    subtopic: "brand_coverage"
+    entity_type: "catalog"
+    entity: "brands"
+    text: "Работаем с широким списком автомобильных брендов и марок техники. Назовите интересующие бренды, и я сразу подскажу наличие каталога или TIS."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 10
+    aliases: ["какие бренды есть", "какие марки есть", "список брендов", "список марок"]
+    action_tags: ["brand_list_info"]
+
+  - fact_id: "brand_availability_specific"
+    topic: "specific_brand_check"
+    subtopic: "brand_presence"
+    entity_type: "catalog"
+    entity: "brand_check"
+    template: "Да, каталог по бренду {brand_display} доступен. Могу подсказать стоимость и варианты подключения."
+    required_slots: ["brand_display"]
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 10
+    aliases: ["есть ли бренд", "есть ли каталог по марке", "наличие бренда", "конкретный бренд"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "brand_availability_need_brand"
+    topic: "specific_brand_check"
+    subtopic: "brand_presence"
+    entity_type: "catalog"
+    entity: "brand_check"
+    text: "Напишите, пожалуйста, марку автомобиля, и я сразу проверю наличие каталога и варианты подключения."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 9
+    aliases: ["есть ли каталог", "поддерживается ли марка", "наличие каталога"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "compare_epc_tis_core"
+    topic: "free_catalog_comparison"
+    subtopic: "difference"
+    entity_type: "comparison"
+    entity: "epc_tis"
+    text: "EPC Full — каталог запчастей по всем брендам и видам техники с единым тарифом. TIS — отдельные технические базы и сервисные модули (схемы, инструкции, сервисные данные), они подключаются отдельно по брендам."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 10
+    aliases: ["чем отличается epc от tis", "разница epc и tis", "сравнить epc tis"]
+    action_tags: ["compare_epc_tis"]
+
+  - fact_id: "product_relation_epc_tis_core"
+    topic: "product_relation_or_difference"
+    subtopic: "epc_tis_relation"
+    entity_type: "comparison"
+    entity: "epc_tis"
+    text: "EPC Full — каталог запчастей по всем брендам и видам техники с единым тарифом. TIS — отдельные технические базы и сервисные модули: схемы, инструкции, сервисные данные. TIS не входит в EPC Full и подключается отдельно по брендам."
+    fact_type: "knowledge"
+    section_tag: "product_relation"
+    priority: 10
+    aliases:
+      - "чем отличается epc от tis"
+      - "разница epc и tis"
+      - "epc входит в tis"
+      - "tis входит в epc"
+      - "epc отдельно от tis"
+      - "tis отдельно покупается"
+      - "epc full включает tis"
+    action_tags: ["compare_epc_tis"]
+
+  - fact_id: "price_objection_vin_note"
+    topic: "price_objection"
+    subtopic: "value"
+    entity_type: "policy"
+    entity: "vin_objection"
+    text: "Понимаю вопрос по стоимости. Мы даем не только проверку VIN, но и доступ к профессиональным каталогам EPC/TIS с актуальными данными для работы по запчастям и сервису."
+    fact_type: "knowledge"
+    section_tag: "objection"
+    priority: 8
+    aliases: ["дорого", "почему так дорого", "есть дешевле", "vin проверка"]
+    action_tags: ["price_objection"]
+
+  - fact_id: "tis_tariffs_brand_required"
+    topic: "tis_tariffs"
+    subtopic: "pricing"
+    entity_type: "pricing"
+    entity: "tis"
+    text: "По TIS стоимость зависит от бренда. Напишите интересующие бренды, и я сразу посчитаю итоговую сумму."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 9
+    aliases: ["сколько стоит tis", "цена tis", "тариф tis"]
+    action_tags: ["tis_tariffs"]
+
+  - fact_id: "tis_price_general"
+    topic: "tis_tariffs"
+    subtopic: "pricing_overview"
+    entity_type: "pricing"
+    entity: "tis"
+    text: "Стоимость TIS зависит от бренда. Если марка указана, сразу показываю цену из прайса; если нет, попрошу назвать бренд."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 10
+    aliases: ["сколько стоит tis", "цена tis", "стоимость tis", "сколько стоит подписка"]
+    action_tags: ["tis_tariffs", "pricing_summary"]
+
+  - fact_id: "free_catalog_comparison_policy"
+    topic: "free_catalog_comparison"
+    subtopic: "free_vs_paid"
+    entity_type: "policy"
+    entity: "free_catalogs"
+    text: "Бесплатные каталоги обычно ограничены по полноте и актуальности. Коммерческий доступ дает более полные данные, стабильный доступ и поддержку рабочих сценариев."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 8
+    aliases: ["бесплатные каталоги", "чем платный лучше бесплатного", "стоит ли платить за каталог"]
+    action_tags: ["free_catalog_comparison"]
+
+  - fact_id: "post_payment_no_access_handoff"
+    topic: "post_payment_no_access"
+    subtopic: "support_handoff"
+    entity_type: "support"
+    entity: "payment_issue"
+    text: "Если оплата уже прошла, но доступ не открылся, пожалуйста, пришлите номер телефона. Наш менеджер проверит статус оплаты и свяжется с вами."
+    fact_type: "knowledge"
+    section_tag: "support"
+    priority: 12
+    aliases: ["оплатили но нет доступа", "после оплаты не пускает", "доступ после оплаты не работает"]
+    action_tags: ["post_payment_no_access_handoff"]
+
+  - fact_id: "post_payment_access_timing"
+    topic: "post_payment_access_timing"
+    subtopic: "activation_time"
+    entity_type: "policy"
+    entity: "payment_activation"
+    text: "Доступ к каталогам предоставляется практически сразу после того, как компания видит оплату."
+    fact_type: "knowledge"
+    section_tag: "payment_timing"
+    priority: 11
+    aliases: ["когда откроется доступ после оплаты", "доступ после оплаты сразу", "как быстро активируется"]
+    action_tags: ["post_payment_access_info"]
+
+  - fact_id: "payment_without_details_policy"
+    topic: "payment_without_details"
+    subtopic: "required_requisites"
+    entity_type: "policy"
+    entity: "payment_requisites"
+    text: "По регламенту для оплаты и выставления счета нужны реквизиты компании: название, ИНН и город. Без этих данных оплату оформить нельзя."
+    fact_type: "knowledge"
+    section_tag: "checkout_steps"
+    priority: 11
+    aliases: ["инн не дам", "без реквизитов", "без инн", "не скажу город", "можно оплатить без данных"]
+    action_tags: ["payment_without_details_info"]
+
+  - fact_id: "usage_limits_no_restrictions"
+    topic: "company_services_info"
+    subtopic: "query_limits"
+    entity_type: "policy"
+    entity: "limits"
+    text: "Ограничений по количеству пользовательских запросов нет."
+    fact_type: "knowledge"
+    section_tag: "usage_limits"
+    priority: 10
+    aliases: ["есть лимит запросов", "сколько запросов можно", "безлимитно ли"]
+    action_tags: ["usage_limits_info"]
+
+  - fact_id: "multi_device_access_policy"
+    topic: "company_services_info"
+    subtopic: "device_policy"
+    entity_type: "policy"
+    entity: "multi_device"
+    text: "Пользоваться сервисом можно с разных компьютеров."
+    fact_type: "knowledge"
+    section_tag: "access_policy"
+    priority: 10
+    aliases: ["можно с разных компьютеров", "можно с другого пк", "несколько компьютеров"]
+    action_tags: ["multi_device_access_info"]
+
+  - fact_id: "multi_user_access_policy"
+    topic: "company_services_info"
+    subtopic: "multi_user"
+    entity_type: "policy"
+    entity: "multi_user"
+    text: "Если доступ нужен нескольким сотрудникам, это можно обсудить при оформлении: подскажем по количеству доступов и подходящему сценарию подключения."
+    fact_type: "knowledge"
+    section_tag: "access_policy"
+    priority: 10
+    aliases: ["можно ли пользоваться нескольким людям", "несколько сотрудников", "несколько пользователей", "сколько доступов нужно", "нескольким людям"]
+    action_tags: ["multi_device_access_info"]
+
+  - fact_id: "company_documents_contact_followup"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "documents_followup"
+    entity_type: "script"
+    entity: "company_documents_followup"
+    text: "Спасибо, контактные данные для документов приняты. Менеджер направит договор и карточку предприятия или при необходимости уточнит недостающие данные."
+    fact_type: "knowledge"
+    section_tag: "documents"
+    priority: 11
+    aliases: ["инн", "телефон", "контакт", "карточка предприятия", "договор"]
+    action_tags: ["company_services_documents"]
+
+  - fact_id: "post_payment_refund_policy"
+    topic: "post_payment_no_access"
+    subtopic: "refund"
+    entity_type: "support"
+    entity: "refund_policy"
+    text: "Если нужно разобраться с возвратом после оплаты или с ситуацией, когда доступ не подошел, лучше передать вопрос менеджеру: он проверит детали оплаты и подскажет дальнейшие шаги."
+    fact_type: "knowledge"
+    section_tag: "support"
+    priority: 11
+    aliases: ["можно вернуть деньги", "возврат денег", "если не подошло", "как вернуть деньги", "refund"]
+    action_tags: ["post_payment_no_access_handoff"]
+
+  - fact_id: "manager_setup_support_info"
+    topic: "manager_setup_support"
+    subtopic: "onboarding"
+    entity_type: "support"
+    entity: "manager_setup"
+    text: "Менеджер по продажам консультирует по настройке и работе с приложением, если появляются вопросы. Обычно вопросов возникает минимум."
+    fact_type: "knowledge"
+    section_tag: "onboarding_support"
+    priority: 10
+    aliases: ["кто поможет с настройкой", "консультация по настройке", "вопросы по приложению"]
+    action_tags: ["manager_setup_support_info"]
+
+  - fact_id: "competitor_choice_retention"
+    topic: "competitor_choice"
+    subtopic: "retention"
+    entity_type: "value"
+    entity: "competitor"
+    text: "Экономия на более дешевом доступе часто оборачивается потерями из-за неполных данных. Клиенты нередко возвращаются к нам именно из-за стабильного VIN-подбора."
+    fact_type: "knowledge"
+    section_tag: "objection"
+    priority: 9
+    aliases: ["уйду к конкуренту", "выберу дешевле", "дешевый конкурент"]
+    action_tags: ["price_objection"]
+
+  - fact_id: "data_accuracy_assurance"
+    topic: "data_accuracy_doubt"
+    subtopic: "accuracy"
+    entity_type: "quality"
+    entity: "accuracy"
+    text: "Данные наших каталогов регулярно обновляются, OEM-номера и замены поддерживаются в актуальном состоянии. Это снижает риск ошибок в подборе."
+    fact_type: "knowledge"
+    section_tag: "quality"
+    priority: 9
+    aliases: ["точность данных", "ошибки в каталоге", "актуальность номеров"]
+    action_tags: ["company_services"]
+
+  - fact_id: "free_catalogs_detailed_gap"
+    topic: "free_catalog_comparison"
+    subtopic: "coverage_gap"
+    entity_type: "comparison"
+    entity: "free_catalogs"
+    text: "Бесплатные каталоги часто обновляются нерегулярно и не покрывают часть VIN по брендам, особенно в китайском, грузовом и спецсегменте."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 9
+    aliases: ["чем хуже бесплатные", "бесплатные каталоги устарели", "у поставщиков не все vin"]
+    action_tags: ["free_catalog_comparison"]
+
+  - fact_id: "brand_list_extended"
+    topic: "brand_list_request"
+    subtopic: "coverage_list"
+    entity_type: "catalog"
+    entity: "brands"
+    text: "Покрытие включает легковые, грузовые, спецтехнику и мототехнику: например BMW, Mercedes-Benz, Audi, Volkswagen, Toyota, Lexus, Volvo, Zeekr, Lada, УАЗ и многие другие."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 8
+    aliases: ["перечень брендов", "какие марки в каталоге", "список марок"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "clarify_request_service"
+    topic: "nonsense_input"
+    subtopic: "clarify"
+    entity_type: "service"
+    entity: "clarify"
+    text: "Уточните, пожалуйста, что именно вас интересует: каталоги EPC, TIS, проверка бренда, оформление доступа или вопрос по оплате."
+    fact_type: "knowledge"
+    section_tag: "clarify"
+    priority: 6
+    aliases: ["уточнить запрос", "не понял", "повтори кратко"]
+    action_tags: ["clarify_request"]
+
+  - fact_id: "closing_ack_service"
+    topic: "nonsense_input"
+    subtopic: "closing"
+    entity_type: "service"
+    entity: "closing"
+    text: "Понял, спасибо за обращение. Если понадобится, помогу в любой момент."
+    fact_type: "knowledge"
+    section_tag: "closing"
+    priority: 6
+    aliases: ["спасибо", "понял", "до связи"]
+    action_tags: ["closing_ack"]
+
+  - fact_id: "greeting_once_service"
+    topic: "nonsense_input"
+    subtopic: "greeting"
+    entity_type: "service"
+    entity: "greeting"
+    text: "Здравствуйте! Чем могу помочь?"
+    fact_type: "knowledge"
+    section_tag: "greeting"
+    priority: 6
+    aliases: ["привет", "здравствуйте", "добрый день"]
+    action_tags: ["greeting_once"]
+
+  - fact_id: "out_of_scope_service"
+    topic: "out_of_scope_request"
+    subtopic: "out_of_scope"
+    entity_type: "service"
+    entity: "out_of_scope"
+    text: "Этот запрос не про автокаталоги. Мы работаем с каталогами автозапчастей и техинформацией для автобизнеса."
+    fact_type: "knowledge"
+    section_tag: "out_of_scope"
+    priority: 7
+    aliases: ["велосипед", "самокат", "космический корабль", "не по теме"]
+    action_tags: ["out_of_scope_response"]

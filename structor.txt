@@ -1,0 +1,25 @@
+├── Chat_bot
+│   ├── knowledge_base
+│   │   └── kb.txt
+│   ├── logs
+│   │   └── chatbot.log
+│   ├── prompts
+│   │   ├── answer_generator_prompt.txt
+│   │   └── topic_classifier_prompt.txt
+│   ├── src
+│   │   ├── app
+│   │   ├── config
+│   │   ├── core
+│   │   ├── llm
+│   │   ├── logging_system
+│   │   ├── prompting
+│   │   ├── retrieval
+│   │   ├── session
+│   │   ├── topics
+│   │   ├── __init__.py
+│   │   └── main.py
+│   ├── topics
+│   │   └── topics.yaml
+│   ├── config.yaml
+│   ├── README.md
+│   └── requirements.txt

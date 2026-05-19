@@ -1,0 +1,2572 @@
+===== the_First_Agent/README.md =====
+# the_First_Agent
+
+Изолированный контур первого агента.
+
+Сюда переносится только то, что относится к цепочке работы первого агента:
+- запрос + история + предыдущее состояние
+- нормализация ввода
+- переформулирование вопроса без добавления новых фактов
+- формирование prompt для модели
+- разбор JSON-ответа модели
+- trace/diagnostics первого агента
+
+Папки:
+- `orchestrator/` — основной orchestration-код первого агента
+- `catalog/` — работа со списком intent/тем первого агента
+- `preprocessing/` — нормализация и rewrite
+- `parsing/` — разбор model JSON
+- `context/` — prompt/context/history helpers
+- `prompts/` — prompt-файлы первого агента
+- `config/` — config первого агента
+
+Не переносится внутрь этого пакета то, что является shared для всего проекта:
+- общие data-модели
+- общий LLM provider
+- общий config loader
+- общий telemetry/logger
+
+
+===== the_First_Agent/__init__.py =====
+
+
+===== the_First_Agent/catalog/__init__.py =====
+
+
+===== the_First_Agent/catalog/topic_catalog.py =====
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+from src.core.models import TopicDefinition
+
+
+class TopicCatalog:
+    def __init__(self, topics_file: Path) -> None:
+        self._topics = self._load(topics_file)
+
+    @staticmethod
+    def _load(topics_file: Path) -> dict[str, TopicDefinition]:
+        raw = yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+        topics: dict[str, TopicDefinition] = {}
+        topics_block = raw.get("topics")
+        intents_block = raw.get("intents")
+
+        if isinstance(topics_block, list):
+            for item in topics_block:
+                topic = TopicDefinition(
+                    id=item["id"],
+                    title=item["title"],
+                    description=item["description"],
+                    keywords=item.get("keywords", []),
+                    aliases=item.get("aliases", []),
+                    anti_keywords=item.get("anti_keywords", []),
+                    choose_when="",
+                    not_choose_when="",
+                    examples=item.get("examples", []),
+                )
+                topics[topic.id] = topic
+            return topics
+
+        if isinstance(intents_block, list):
+            for item in intents_block:
+                if not isinstance(item, dict):
+                    continue
+                intent_id = str(item.get("intent", "")).strip()
+                if not intent_id:
+                    continue
+                label_ru = str(item.get("label_ru", "")).strip() or intent_id
+                choose_when_points = TopicCatalog._normalize_points(item.get("choose_when", ""))
+                not_choose_when_points = TopicCatalog._normalize_points(item.get("not_choose_when", ""))
+                examples = TopicCatalog._normalize_examples(item.get("examples", []))
+                choose_when = "\n".join(choose_when_points)
+                not_choose_when = "\n".join(not_choose_when_points)
+                topic = TopicDefinition(
+                    id=intent_id,
+                    title=label_ru,
+                    description=label_ru,
+                    keywords=examples or TopicCatalog._extract_quoted_phrases(choose_when),
+                    aliases=[],
+                    anti_keywords=TopicCatalog._extract_quoted_phrases(not_choose_when),
+                    choose_when=choose_when,
+                    not_choose_when=not_choose_when,
+                    examples=examples,
+                )
+                topics[topic.id] = topic
+        return topics
+
+    @staticmethod
+    def _normalize_points(value: object) -> list[str]:
+        if isinstance(value, list):
+            points: list[str] = []
+            for item in value:
+                text = str(item).strip()
+                if text and text not in points:
+                    points.append(text)
+            return points
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text:
+            return []
+        chunks = re.split(r"(?<=[.!?])\s+|;\s+", text)
+        points: list[str] = []
+        for chunk in chunks:
+            item = chunk.strip(" -")
+            if item and item not in points:
+                points.append(item)
+        return points or [text]
+
+    @staticmethod
+    def _normalize_examples(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        examples: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text and text not in examples:
+                examples.append(text)
+        return examples
+
+    @staticmethod
+    def _extract_quoted_phrases(text: str) -> list[str]:
+        if not text:
+            return []
+        phrases = re.findall(r'"([^"]+)"', text)
+        unique: list[str] = []
+        for phrase in phrases:
+            normalized = phrase.strip()
+            if normalized and normalized not in unique:
+                unique.append(normalized)
+        return unique
+
+    @property
+    def topics(self) -> dict[str, TopicDefinition]:
+        return self._topics
+
+    def _selected_topics(self, topic_ids: list[str] | None = None) -> list[TopicDefinition]:
+        if not topic_ids:
+            return list(self._topics.values())
+        selected: list[TopicDefinition] = []
+        for topic_id in topic_ids:
+            topic = self._topics.get(str(topic_id))
+            if topic is not None:
+                selected.append(topic)
+        return selected
+
+    def title_map(self, topic_ids: list[str] | None = None) -> dict[str, str]:
+        return {topic.id: topic.title for topic in self._selected_topics(topic_ids)}
+
+    def allowed_intents_text(self, topic_ids: list[str] | None = None) -> str:
+        return "\n".join(f"- {topic.id}" for topic in self._selected_topics(topic_ids))
+
+    def as_prompt_text(self, topic_ids: list[str] | None = None) -> str:
+        blocks: list[str] = []
+        selected_topics = self._selected_topics(topic_ids)
+        selected_ids = {topic.id for topic in selected_topics}
+        for topic in selected_topics:
+            choose_when_lines = self._filter_points_for_shortlist(
+                self._points_from_text(topic.choose_when or topic.description),
+                selected_ids=selected_ids,
+                current_topic_id=topic.id,
+            )
+            not_choose_when_lines = self._filter_points_for_shortlist(
+                self._points_from_text(topic.not_choose_when or "-"),
+                selected_ids=selected_ids,
+                current_topic_id=topic.id,
+            )
+            examples = topic.examples[:3] or topic.keywords[:3]
+            parts = [
+                f"intent_id: {topic.id}",
+                "choose_when:",
+                *[f"- {line}" for line in choose_when_lines],
+                "not_choose_when:",
+                *[f"- {line}" for line in not_choose_when_lines],
+            ]
+            if examples:
+                parts.extend(
+                    [
+                        "examples:",
+                        *[f'- "{item}"' for item in examples],
+                    ]
+                )
+            blocks.append("\n".join(parts))
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _points_from_text(text: str) -> list[str]:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip())
+        if not normalized or normalized == "-":
+            return ["-"]
+        chunks = re.split(r"(?<=[.!?])\s+|;\s+", normalized)
+        points: list[str] = []
+        for chunk in chunks:
+            item = chunk.strip(" -")
+            if not item:
+                continue
+            if item not in points:
+                points.append(item)
+        return points or [normalized]
+
+    def _filter_points_for_shortlist(
+        self,
+        points: list[str],
+        *,
+        selected_ids: set[str],
+        current_topic_id: str,
+    ) -> list[str]:
+        filtered: list[str] = []
+        allowed_ids = set(selected_ids)
+        allowed_ids.add(current_topic_id)
+        for point in points:
+            foreign_reference = False
+            for topic_id in self._topics:
+                if topic_id in allowed_ids:
+                    continue
+                if f"`{topic_id}`" in point:
+                    foreign_reference = True
+                    break
+            if not foreign_reference:
+                filtered.append(point)
+        return filtered or ["-"]
+
+
+===== the_First_Agent/catalog/topic_shortlist_builder.py =====
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from src.core.models import SessionState, TopicDefinition
+
+
+@dataclass(slots=True)
+class TopicShortlistCandidate:
+    topic_id: str
+    label_ru: str
+    score: float
+    overlap: float
+    jaccard: float
+    avoid_overlap: float
+    matched_tokens: list[str]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "topic_id": self.topic_id,
+            "label_ru": self.label_ru,
+            "score": self.score,
+            "overlap": self.overlap,
+            "jaccard": self.jaccard,
+            "avoid_overlap": self.avoid_overlap,
+            "matched_tokens": list(self.matched_tokens),
+        }
+
+
+@dataclass(slots=True)
+class _TopicSignals:
+    id_tokens: set[str]
+    title_tokens: set[str]
+    keyword_tokens: set[str]
+    alias_tokens: set[str]
+    example_tokens: set[str]
+    description_tokens: set[str]
+    choose_tokens: set[str]
+    anti_tokens: set[str]
+
+    @property
+    def positive_tokens(self) -> set[str]:
+        return (
+            self.id_tokens
+            | self.title_tokens
+            | self.keyword_tokens
+            | self.alias_tokens
+            | self.example_tokens
+            | self.description_tokens
+            | self.choose_tokens
+        )
+
+
+class TopicShortlistBuilder:
+    _TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯёЁ0-9]+")
+    _SHORT_REPLY_EXACT = {
+        "да", "нет", "являюсь", "все", "всё", "ага", "ок", "yes", "no", "неа", "nope", "yep",
+        "а какие есть", "какие есть",
+    }
+    _SHORT_REPLY_TOKENS = {
+        "да", "нет", "являюсь", "все", "всё", "ага", "ок", "yes", "no", "nope", "yep",
+        "юрлиц", "legal", "физлицо",
+    }
+    _NON_SCORING_REPLY_TOKENS = {"да", "нет", "yes", "no", "yep", "nope", "являюсь", "ок", "ага"}
+    _STOPWORDS = {
+        "и", "а", "но", "или", "же", "ли", "на", "в", "во", "по", "к", "ко", "с", "со", "у", "о", "об", "от",
+        "до", "из", "за", "для", "это", "как", "что", "то", "бы", "ну", "мне", "мы", "вы", "я", "он", "она",
+        "они", "нас", "вам", "их", "его", "ее", "еще", "ещё", "тогда", "просто", "вообще", "либо", "если",
+        "был", "была", "были", "будет", "есть", "нужен", "нужна", "нужно", "нужны", "могу", "можно",
+        "ваш", "ваша", "ваши", "наш", "наша", "наши",
+    }
+    _KEEP_TOKENS = {"нет", "без", "да"}
+    _FIELD_WEIGHTS = {
+        "id_tokens": 0.70,
+        "title_tokens": 0.85,
+        "keyword_tokens": 1.00,
+        "alias_tokens": 1.00,
+        "example_tokens": 0.95,
+        "description_tokens": 0.12,
+        "choose_tokens": 0.08,
+    }
+    _SAFE_SYNONYMS = {
+        "epc": {"епс"},
+        "епс": {"epc"},
+        "tis": {"тис"},
+        "тис": {"tis"},
+        "цена": {"стоимость"},
+        "стоимость": {"цена"},
+        "юрлиц": {"ип"},
+        "ип": {"юрлиц"},
+        "счет": {"счёт"},
+        "счёт": {"счет"},
+        "бренд": {"марка"},
+        "марка": {"бренд"},
+    }
+    _TOKEN_NORMALIZATIONS = {
+        "стоимость": "цена",
+        "тариф": "цена",
+        "тарифы": "цена",
+        "сколько": "цена",
+        "стоит": "цена",
+        "почем": "цена",
+        "епс": "epc",
+        "тис": "tis",
+        "счёт": "счет",
+        "счета": "счет",
+        "счёта": "счет",
+        "интеграция": "api",
+        "мак": "macos",
+        "mac": "macos",
+        "маке": "macos",
+        "дайте": "дать",
+        "давать": "дать",
+        "физик": "физлицо",
+        "физ": "физлицо",
+        "физлица": "физлицо",
+        "физлицом": "физлицо",
+        "физлицами": "физлицо",
+        "частное": "физлицо",
+        "частный": "физлицо",
+        "частными": "физлицо",
+        "частным": "физлицо",
+        "юрлица": "юрлиц",
+        "юрлицо": "юрлиц",
+        "юрлицам": "юрлиц",
+        "юрлицами": "юрлиц",
+        "юридическое": "юрлиц",
+        "юридическим": "юрлиц",
+        "юридическими": "юрлиц",
+        "юридического": "юрлиц",
+        "ип": "юрлиц",
+        "инн": "инн",
+        "qr": "qr",
+        "оплачу": "оплат",
+        "оплатить": "оплат",
+        "оплаты": "оплат",
+        "оплата": "оплат",
+        "оплатил": "оплат",
+        "оплачиваем": "оплат",
+        "куплю": "купить",
+        "покупка": "купить",
+        "покупку": "купить",
+        "данные": "данн",
+        "данных": "данн",
+        "точные": "точн",
+        "точно": "точн",
+        "актуальные": "актуальн",
+        "актуальны": "актуальн",
+        "устаревшие": "устаревш",
+        "устарело": "устаревш",
+        "да": "да",
+        "yes": "yes",
+        "yep": "yes",
+        "no": "no",
+        "nope": "no",
+        "ага": "да",
+        "неа": "нет",
+        "legal": "юрлиц",
+    }
+    _PRICING_TOKENS = {"цена", "подписка", "месяц", "год"}
+    _REFUND_PATTERNS = (
+        re.compile(r"\bвозврат\b"),
+        re.compile(r"\bвернут[ьт]?\s+деньг"),
+        re.compile(r"\bможно\s+вернуть\b"),
+        re.compile(r"\bесли\s+не\s+подошл"),
+        re.compile(r"\bоплатил[аи]?\b.*\bнет\b.*\bдоступ"),
+        re.compile(r"\bпосле\s+оплаты\b.*\bнет\b.*\bдоступ"),
+    )
+    _LIST_PATTERNS = (
+        re.compile(r"\bкакие\s+бренд"),
+        re.compile(r"\bкакие\s+марк"),
+        re.compile(r"\bкакие\s+каталог"),
+        re.compile(r"\bсписок\s+бренд"),
+        re.compile(r"\bперечень\s+бренд"),
+        re.compile(r"\bвсе\s+бренд"),
+    )
+
+    def __init__(
+        self,
+        topics: dict[str, TopicDefinition],
+        *,
+        top_k: int = 8,
+        out_of_scope_threshold: float = 0.32,
+        brands_file_path: Path | None = None,
+        facts_file_path: Path | None = None,
+    ) -> None:
+        self._topics = dict(topics)
+        self._top_k = max(int(top_k), 2)
+        self._out_of_scope_threshold = float(out_of_scope_threshold)
+        project_root = Path(__file__).resolve().parents[2]
+        self._brands_file_path = brands_file_path or (project_root / "src/config/brands.yaml")
+        self._facts_file_path = facts_file_path or (project_root / "src/config/facts.yaml")
+        self._brand_aliases = self._load_brand_aliases(self._brands_file_path)
+        self._fact_aliases_by_topic = self._load_fact_aliases_by_topic(self._facts_file_path)
+        self._topic_signals = {
+            topic_id: self._build_topic_signals(topic)
+            for topic_id, topic in self._topics.items()
+        }
+
+    def build_shortlist(
+        self,
+        query: str,
+        history_text: str = "",
+        session_state: SessionState | None = None,
+        top_k: int | None = None,
+    ) -> list[TopicShortlistCandidate]:
+        limit = max(int(top_k or self._top_k), 2)
+        raw_query = str(query or "")
+        query_tokens = set(self._tokenize(raw_query))
+        context_tokens = set(self._expand_context_tokens(raw_query, history_text, session_state))
+        effective_tokens = self._expand_with_synonyms(query_tokens | context_tokens)
+        scoring_tokens = effective_tokens - self._NON_SCORING_REPLY_TOKENS
+        brand_matches = self._detect_brands(raw_query)
+        if not brand_matches and self._is_short_reply(raw_query, query_tokens) and session_state and session_state.last_mentioned_brand.strip():
+            brand_matches = self._detect_brands(session_state.last_mentioned_brand)
+        assistant_hints = set(self._assistant_context_hints(self._extract_last_assistant_message(history_text)))
+        query_signals = self._build_query_signals(
+            raw_query,
+            query_tokens,
+            effective_tokens,
+            brand_matches,
+            assistant_hints,
+        )
+
+        candidates = [
+            self._score_topic(
+                topic=self._topics[topic_id],
+                signals=self._topic_signals[topic_id],
+                effective_tokens=scoring_tokens,
+                query_signals=query_signals,
+                brand_matches=brand_matches,
+                assistant_hints=assistant_hints,
+            )
+            for topic_id in self._topics
+        ]
+        ranked = sorted(
+            candidates,
+            key=lambda item: (-item.score, -item.overlap, -item.jaccard, item.avoid_overlap, item.topic_id),
+        )
+
+        need_nonsense = bool(query_signals["noisy"])
+        max_profile_score = max(
+            (item.score for item in ranked if item.topic_id not in {"nonsense_input", "out_of_scope_request"}),
+            default=0.0,
+        )
+        need_out_of_scope = bool(query_signals["out_of_scope_like"] or max_profile_score < self._out_of_scope_threshold)
+
+        fallback_ids = []
+        if need_nonsense:
+            fallback_ids.append("nonsense_input")
+        if need_out_of_scope:
+            fallback_ids.append("out_of_scope_request")
+
+        primary_limit = max(limit - len(fallback_ids), 0)
+        selected = self._select_primary_candidates(ranked, primary_limit)
+        selected_ids = {item.topic_id for item in selected}
+        for topic_id in fallback_ids:
+            candidate = next((item for item in ranked if item.topic_id == topic_id), None)
+            if candidate is None or topic_id in selected_ids:
+                continue
+            selected.append(candidate)
+            selected_ids.add(topic_id)
+
+        return sorted(
+            selected,
+            key=lambda item: (-item.score, -item.overlap, -item.jaccard, item.avoid_overlap, item.topic_id),
+        )[:limit]
+
+    def build_topic_ids(
+        self,
+        query: str,
+        history_text: str = "",
+        session_state: SessionState | None = None,
+        top_k: int | None = None,
+    ) -> list[str]:
+        return [item.topic_id for item in self.build_shortlist(query, history_text, session_state, top_k)]
+
+    def _select_primary_candidates(
+        self,
+        ranked: list[TopicShortlistCandidate],
+        limit: int,
+    ) -> list[TopicShortlistCandidate]:
+        selected: list[TopicShortlistCandidate] = []
+        for item in ranked:
+            if item.topic_id in {"nonsense_input", "out_of_scope_request"}:
+                continue
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    def _score_topic(
+        self,
+        *,
+        topic: TopicDefinition,
+        signals: _TopicSignals,
+        effective_tokens: set[str],
+        query_signals: dict[str, bool],
+        brand_matches: set[str],
+        assistant_hints: set[str],
+    ) -> TopicShortlistCandidate:
+        score = 0.0
+        for field_name, weight in self._FIELD_WEIGHTS.items():
+            score += weight * self._field_match_score(effective_tokens, getattr(signals, field_name))
+
+        overlap = self._token_overlap(effective_tokens, signals.positive_tokens)
+        jaccard = self._jaccard(effective_tokens, signals.positive_tokens)
+        avoid_overlap = self._avoid_overlap(effective_tokens, signals.anti_tokens)
+
+        score += 0.18 * overlap
+        score += 0.10 * jaccard
+        score -= 0.25 * avoid_overlap
+        score += self._intent_boost(topic.id, query_signals, brand_matches, assistant_hints)
+
+        matched_tokens = sorted((effective_tokens & signals.positive_tokens) - self._STOPWORDS)
+        return TopicShortlistCandidate(
+            topic_id=topic.id,
+            label_ru=topic.title,
+            score=round(score, 6),
+            overlap=round(overlap, 6),
+            jaccard=round(jaccard, 6),
+            avoid_overlap=round(avoid_overlap, 6),
+            matched_tokens=matched_tokens,
+        )
+
+    def _intent_boost(
+        self,
+        topic_id: str,
+        query_signals: dict[str, bool],
+        brand_matches: set[str],
+        assistant_hints: set[str],
+    ) -> float:
+        boost = 0.0
+        if query_signals["pricing_like"] and topic_id in {"epc_tariffs", "tis_tariffs"}:
+            boost += 0.40
+        if query_signals["refund_like"] and topic_id == "post_payment_no_access":
+            boost += 0.55
+        if brand_matches and topic_id == "specific_brand_check":
+            boost += 0.40
+        if query_signals["list_like"] and topic_id == "brand_list_request":
+            boost += 0.35
+        if query_signals["physical_like"] and topic_id == "physical_person_purchase":
+            boost += 0.42
+        if query_signals["no_private_reason_like"] and topic_id == "no_private_sales_reason":
+            boost += 0.44
+        if query_signals["legal_flow_like"] and topic_id == "legal_entity_purchase_flow":
+            boost += 0.42
+        if query_signals["payment_without_details_like"] and topic_id == "payment_without_details":
+            boost += 0.48
+        if query_signals["purchase_ready_like"] and topic_id == "purchase_ready":
+            boost += 0.36
+        if query_signals["accuracy_like"] and topic_id == "data_accuracy_doubt":
+            boost += 0.50
+        if query_signals["price_objection_like"] and topic_id == "price_objection":
+            boost += 0.40
+        if query_signals["competitor_like"] and topic_id == "competitor_choice":
+            boost += 0.42
+        if query_signals["api_like"] and topic_id == "api_integration":
+            boost += 0.45
+        if query_signals["demo_like"] and topic_id == "demo_access":
+            boost += 0.45
+        if query_signals["human_like"] and topic_id == "human_operator_request":
+            boost += 0.45
+        if query_signals["macos_like"] and topic_id == "macos_support":
+            boost += 0.45
+        if query_signals["noisy"] and topic_id == "nonsense_input":
+            boost += 0.65
+        if query_signals["out_of_scope_like"] and topic_id == "out_of_scope_request":
+            boost += 0.55
+        if query_signals["short_yes_like"] and "юрлиц" in assistant_hints and topic_id == "legal_entity_purchase_flow":
+            boost += 0.55
+        if query_signals["short_no_like"] and "юрлиц" in assistant_hints and topic_id == "physical_person_purchase":
+            boost += 0.55
+        if "демо" in assistant_hints and topic_id == "demo_access" and (
+            query_signals["short_yes_like"] or query_signals["short_no_like"]
+        ):
+            boost += 0.55
+        return boost
+
+    def _build_topic_signals(self, topic: TopicDefinition) -> _TopicSignals:
+        fact_aliases = self._fact_aliases_by_topic.get(topic.id, [])
+        return _TopicSignals(
+            id_tokens=set(self._tokenize(topic.id)),
+            title_tokens=set(self._tokenize(topic.title)),
+            keyword_tokens=set(self._tokenize(" ".join(topic.keywords))),
+            alias_tokens=set(self._tokenize(" ".join(topic.aliases))),
+            example_tokens=set(self._tokenize(" ".join(topic.examples or fact_aliases))),
+            description_tokens=set(self._tokenize(topic.description)),
+            choose_tokens=set(self._tokenize(topic.choose_when)),
+            anti_tokens=set(self._tokenize(" ".join(topic.anti_keywords))) | set(self._tokenize(topic.not_choose_when)),
+        )
+
+    def _build_query_signals(
+        self,
+        raw_query: str,
+        query_tokens: set[str],
+        effective_tokens: set[str],
+        brand_matches: set[str],
+        assistant_hints: set[str],
+    ) -> dict[str, bool]:
+        normalized = self._normalize_text(raw_query)
+        pricing_like = bool(query_tokens & self._PRICING_TOKENS) or bool(re.search(r"\b(что\s+по\s+деньгам|на\s+год|на\s+месяц)\b", normalized))
+        refund_like = any(pattern.search(normalized) for pattern in self._REFUND_PATTERNS)
+        list_like = any(pattern.search(normalized) for pattern in self._LIST_PATTERNS) or normalized in {"все", "всё", "а какие есть", "какие есть"}
+        physical_like = "физлицо" in effective_tokens
+        no_private_reason_like = physical_like and bool(re.search(r"\b(почему|зачем)\b", normalized))
+        legal_flow_like = bool(effective_tokens & {"инн", "счет", "qr", "юрлиц", "компан", "реквизит"})
+        payment_without_details_like = bool(effective_tokens & {"инн", "реквизит"}) and bool(re.search(r"\b(без|не|позже)\b", normalized))
+        purchase_ready_like = bool(effective_tokens & {"купить", "оформ", "подключ", "оплат"})
+        accuracy_like = bool(effective_tokens & {"данн", "точн", "устаревш", "актуальн", "vin"})
+        price_objection_like = bool(re.search(r"\b(дорого|дороговато|скидк)\b", normalized))
+        competitor_like = bool(re.search(r"\b(конкурент|дешевле\s+у\s+друг|уйду\s+к)\b", normalized))
+        api_like = "api" in effective_tokens or "1с" in normalized
+        demo_like = "демо" in effective_tokens or "demo" in normalized or "trial" in normalized
+        human_like = bool(re.search(r"\b(менеджер|оператор|человек)\b", normalized))
+        macos_like = "macos" in effective_tokens
+        noisy = self._is_noise_like(raw_query, query_tokens)
+        out_of_scope_like = bool(re.search(r"\b(погода|велосипед|самокат|космическ|корабл)\b", normalized))
+        return {
+            "pricing_like": pricing_like,
+            "refund_like": refund_like,
+            "list_like": list_like,
+            "physical_like": physical_like,
+            "no_private_reason_like": no_private_reason_like,
+            "legal_flow_like": legal_flow_like,
+            "payment_without_details_like": payment_without_details_like,
+            "purchase_ready_like": purchase_ready_like,
+            "accuracy_like": accuracy_like,
+            "price_objection_like": price_objection_like,
+            "competitor_like": competitor_like,
+            "api_like": api_like,
+            "demo_like": demo_like,
+            "human_like": human_like,
+            "macos_like": macos_like,
+            "noisy": noisy,
+            "out_of_scope_like": out_of_scope_like,
+            "short_yes_like": bool(query_tokens & {"да", "yes", "являюсь"}) or normalized in {"ага", "yep", "да являюсь"},
+            "short_no_like": bool(query_tokens & {"нет", "no"}) or normalized in {"неа", "nope"},
+        }
+
+    def _expand_context_tokens(
+        self,
+        query: str,
+        history_text: str,
+        session_state: SessionState | None,
+    ) -> list[str]:
+        query_tokens = set(self._tokenize(query))
+        if not self._is_short_reply(query, query_tokens):
+            return []
+
+        hints: list[str] = []
+        last_assistant = self._extract_last_assistant_message(history_text)
+        hints.extend(self._assistant_context_hints(last_assistant))
+        if session_state and session_state.last_mentioned_brand.strip():
+            hints.extend(self._tokenize(session_state.last_mentioned_brand))
+        return hints
+
+    def _assistant_context_hints(self, last_assistant: str) -> list[str]:
+        text = self._normalize_text(last_assistant)
+        if not text:
+            return []
+        hints: list[str] = []
+        if re.search(r"\b(бренд|марк|каталог)\b", text):
+            hints.extend(["бренд"])
+        if re.search(r"\b(tis|тис)\b", text):
+            hints.extend(["tis"])
+        if re.search(r"\b(epc|епс)\b", text):
+            hints.extend(["epc"])
+        if re.search(r"\b(демо|demo|trial)\b", text):
+            hints.extend(["демо"])
+        if re.search(r"\b(юр|юридическ|ип)\w*\b", text):
+            hints.extend(["юрлиц"])
+        if re.search(r"\b(инн|счет|сч[её]т|qr)\b", text):
+            hints.extend(["инн", "счет", "qr"])
+        return hints
+
+    def _detect_brands(self, text: str) -> set[str]:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return set()
+        matches: set[str] = set()
+        for alias in self._brand_aliases:
+            pattern = rf"(?<![a-zа-я0-9]){re.escape(alias)}(?![a-zа-я0-9])"
+            if re.search(pattern, normalized):
+                matches.add(alias)
+        return matches
+
+    @classmethod
+    def _is_short_reply(cls, raw_query: str, query_tokens: set[str]) -> bool:
+        normalized = cls._normalize_text(raw_query)
+        if normalized in cls._SHORT_REPLY_EXACT:
+            return True
+        return bool(query_tokens) and len(query_tokens) <= 2 and query_tokens <= cls._SHORT_REPLY_TOKENS
+
+    @classmethod
+    def _is_noise_like(cls, raw_query: str, query_tokens: set[str]) -> bool:
+        normalized = cls._normalize_text(raw_query)
+        if not query_tokens:
+            return True
+        if normalized in {".", "..", "...", "...."}:
+            return True
+        if len(query_tokens) == 1:
+            token = next(iter(query_tokens))
+            if len(token) >= 6 and len(set(token)) <= 2:
+                return True
+        return False
+
+    @classmethod
+    def _load_brand_aliases(cls, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        aliases: list[str] = []
+        for item in raw.get("brands", []):
+            canonical = cls._normalize_text(str(item.get("canonical", "")))
+            if canonical:
+                aliases.append(canonical)
+            for alias in item.get("aliases", []):
+                normalized = cls._normalize_text(str(alias))
+                if normalized:
+                    aliases.append(normalized)
+        return sorted({alias for alias in aliases if alias}, key=len, reverse=True)
+
+    @classmethod
+    def _load_fact_aliases_by_topic(cls, path: Path) -> dict[str, list[str]]:
+        if not path.exists():
+            return {}
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        grouped: dict[str, list[str]] = defaultdict(list)
+        for item in raw.get("facts", []):
+            topic = str(item.get("topic", "")).strip()
+            if not topic:
+                continue
+            for alias in item.get("aliases", []):
+                value = str(alias).strip()
+                if value:
+                    grouped[topic].append(value)
+        return {key: values for key, values in grouped.items()}
+
+    @classmethod
+    def _extract_last_assistant_message(cls, history_text: str) -> str:
+        lines = [line.strip() for line in str(history_text).splitlines() if line.strip()]
+        for line in reversed(lines):
+            if line.lower().startswith("assistant:"):
+                return line.split(":", 1)[1].strip()
+        return ""
+
+    @classmethod
+    def _normalize_text(cls, text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").lower().replace("ё", "е")).strip()
+
+    @classmethod
+    def _tokenize(cls, text: str) -> list[str]:
+        normalized = cls._normalize_text(text)
+        tokens = [match.group(0) for match in cls._TOKEN_RE.finditer(normalized)]
+        cleaned: list[str] = []
+        for token in tokens:
+            value = cls._normalize_token(token)
+            if not value:
+                continue
+            if value in cls._STOPWORDS and value not in cls._KEEP_TOKENS:
+                continue
+            cleaned.append(value)
+        return cleaned
+
+    @classmethod
+    def _normalize_token(cls, token: str) -> str:
+        value = str(token or "").strip().lower().replace("ё", "е")
+        if not value:
+            return ""
+        value = cls._TOKEN_NORMALIZATIONS.get(value, value)
+        for suffix in ("ами", "ями", "ого", "ему", "ому", "иях", "ах", "ях", "ов", "ев", "ей", "ам", "ям", "ом", "ем"):
+            if len(value) > len(suffix) + 2 and value.endswith(suffix):
+                value = value[: -len(suffix)]
+                break
+        if len(value) > 4 and value.endswith(("а", "я", "ы", "и", "е", "у", "ю", "о")):
+            value = value[:-1]
+        return cls._TOKEN_NORMALIZATIONS.get(value, value)
+
+    @classmethod
+    def _expand_with_synonyms(cls, tokens: set[str]) -> set[str]:
+        expanded = set(tokens)
+        for token in list(tokens):
+            expanded.update(cls._SAFE_SYNONYMS.get(token, set()))
+        return expanded
+
+    @staticmethod
+    def _field_match_score(query_tokens: set[str], field_tokens: set[str]) -> float:
+        if not query_tokens or not field_tokens:
+            return 0.0
+        return len(query_tokens & field_tokens) / max(min(len(query_tokens), 4), 1)
+
+    @staticmethod
+    def _token_overlap(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / max(len(left), 1)
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        union = left | right
+        if not union:
+            return 0.0
+        return len(left & right) / len(union)
+
+    @staticmethod
+    def _avoid_overlap(left: set[str], anti_tokens: set[str]) -> float:
+        if not left or not anti_tokens:
+            return 0.0
+        return len(left & anti_tokens) / max(len(left), 1)
+
+
+===== the_First_Agent/config/__init__.py =====
+
+
+===== the_First_Agent/config/intent_config_loader.py =====
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+class IntentConfigLoader:
+    def __init__(self, intents_path: Path, brands_path: Path) -> None:
+        self._intents_path = intents_path
+        self._brands_path = brands_path
+
+    def load(self) -> dict[str, Any]:
+        intents_raw = yaml.safe_load(self._intents_path.read_text(encoding="utf-8")) or {}
+        brands_raw = yaml.safe_load(self._brands_path.read_text(encoding="utf-8")) or {}
+        intents_raw.setdefault("signals", {})
+        intents_raw["signals"]["brand_aliases"] = self._extract_brand_aliases(brands_raw)
+        return intents_raw
+
+    @staticmethod
+    def _extract_brand_aliases(brands_raw: dict[str, Any]) -> list[str]:
+        aliases: list[str] = []
+        for item in brands_raw.get("brands", []):
+            canonical = str(item.get("canonical", "")).strip()
+            if canonical:
+                aliases.append(canonical.lower())
+            for alias in item.get("aliases", []):
+                norm = str(alias).strip().lower()
+                if norm:
+                    aliases.append(norm)
+        deduped: list[str] = []
+        for alias in aliases:
+            if alias not in deduped:
+                deduped.append(alias)
+        return deduped
+
+
+===== the_First_Agent/config/resource_paths.py =====
+from __future__ import annotations
+
+from pathlib import Path
+
+
+FIRST_AGENT_ROOT = Path(__file__).resolve().parents[1]
+SEMANTIC_INTENTS_PATH = FIRST_AGENT_ROOT / "config" / "semantic_intents.yaml"
+TOPIC_CLASSIFIER_PROMPT_PATH = FIRST_AGENT_ROOT / "prompts" / "topic_classifier_prompt.txt"
+
+
+===== the_First_Agent/config/semantic_intents.yaml =====
+intents:
+- intent: epc_tariffs
+  label_ru: Тарифы EPC
+  choose_when: >-
+    Пользователь спрашивает цену, стоимость, тариф или условия подписки EPC Full,
+    включая сроки 1/3/6/12 месяцев, продление, оплату на год и разницу по периодам.
+    Также эта тема подходит для коротких общих ценовых запросов без указания бренда
+    вроде "сколько стоит", "какая цена", "стоимость подписки" или "стоимость доступа",
+    а также для шумных, но распознаваемых запросов со словами "епс", "epc", "на год",
+    когда смысл все равно сводится к цене или сроку доступа. Когда ответ по смыслу
+    должен включать EPC как часть общего прайса. Если пользователь
+    задает общий вопрос о стоимости каталогов или подписки без уточнения бренда, эта тема
+    должна идти вместе с `tis_tariffs`, а не вместо нее.
+  not_choose_when: >-
+    Пользователь не спрашивает про стоимость EPC, а просит общий обзор
+    возможностей, сравнение качества сервиса, оформление реквизитов или возражает
+    что дорого без запроса конкретного тарифа. Не выбирай эту тему только из-за слов
+    "каталог", "подписка" или "доступ", если в запросе нет явного вопроса о цене.
+    Если пользователь просто спрашивает какие каталоги есть, какие марки доступны
+    или чем сервис полезен, это не `epc_tariffs`. Возражение против оформления,
+    раздраженный pushback и вопросы "куда вы меня оформляете" тоже не относятся
+    к `epc_tariffs`.
+
+- intent: tis_tariffs
+  label_ru: Тарифы TIS
+  choose_when: >-
+    Пользователь спрашивает цену TIS, стоимость TIS по конкретным брендам, расчет
+    итоговой суммы нескольких TIS или различия между TIS позициями. Также эта тема
+    подходит для коротких самостоятельных продуктовых запросов вроде "TIS",
+    "сколько TIS", "а сколько TIS на него", когда из истории или текущей реплики
+    понятно, что клиент спрашивает именно про стоимость или подключение TIS.
+    Эта тема подходит для коротких общих ценовых запросов без указания бренда вроде
+    "сколько стоит", "какая цена", "стоимость подписки" или "стоимость доступа",
+    когда ответ по смыслу должен напомнить, что TIS считается отдельно по брендам.
+    Если пользователь задает общий вопрос о стоимости каталогов или подписки без
+    уточнения бренда, эта тема должна идти вместе с `epc_tariffs`, а не теряться.
+  not_choose_when: >-
+    Пользователь не запрашивает расчет стоимости TIS, а обсуждает только наличие
+    бренда, общий процесс покупки, общий обзор сервиса или возражение по цене без
+    запроса прайса TIS. Не выбирай эту тему только из-за слов "каталог", "подписка"
+    или "доступ", если в запросе нет явного вопроса о цене. Если пользователь
+    просто спрашивает какие каталоги есть или какие марки доступны, это не `tis_tariffs`.
+    Вопрос про наличие бренда без упоминания цены TIS тоже не должен вести сюда.
+
+- intent: brand_list_request
+  label_ru: Список брендов
+  choose_when: >-
+    Пользователь просит перечислить какие бренды автомобилей и каталоги вообще
+    доступны, просит полный список марок или охват по легковым, грузовым и
+    спецтехнике. Сюда же относятся короткие follow-up реплики после обсуждения
+    каталогов: "а какие есть", "все", "по грузовым", "еще какие". Смысл вопроса
+    здесь именно в перечислении доступных автомобильных брендов, охвата или примеров
+    каталогов, а не в описании преимуществ сервиса.
+  not_choose_when: >-
+    Пользователь спрашивает не общий список, а наличие одной конкретной марки,
+    цену TIS/EPC или оформление покупки. Если запрос выглядит как реальный
+    предметный вопрос по брендам и каталогам, не добавляй сюда лишнюю fallback-тему.
+    Если пользователь спрашивает "что ты умеешь", "какие преимущества", "какие минусы"
+    или просит договор/карточку предприятия, это не `brand_list_request`.
+
+- intent: specific_brand_check
+  label_ru: Проверка конкретного бренда
+  choose_when: >-
+    Пользователь спрашивает есть ли каталог конкретной автомобильной марки, пишет
+    название бренда напрямую или с опечаткой и ожидает подтверждение наличия.
+    Сюда относятся фразы вроде "есть ли каталог вольво", "нужен каталог шахман",
+    "а audi есть?", "какой каталог мне нужен для мерседес", а также вопросы про
+    неизвестную или редкую автомобильную марку, если по смыслу это именно проверка
+    наличия каталога или TIS по бренду автомобиля. Для TIS упоминание автомобильного
+    бренда нормально и не означает частичный каталог.
+  not_choose_when: >-
+    Пользователь просит общий список всех брендов без фокуса на одной марке.
+    Пользователь не обсуждает покупку только одного бренда как отдельного товарного
+    пакета, а лишь проверяет наличие бренда автомобиля. Если запрос уже уверенно
+    относится к конкретному бренду, не добавляй лишнюю общую fallback-тему.
+
+- intent: company_services_info
+  label_ru: Возможности сервиса
+  choose_when: >-
+    Общий вопрос о пользе и возможностях сервиса: что умеет продукт, чем полезен,
+    какие функции доступны, какие преимущества и минусы, можно ли нескольким людям
+    пользоваться, что входит в работу сервиса, как он помогает клиенту. Сюда же
+    относятся общие условия работы и сопротивление оформлению вроде "это куда ты
+    меня оформлять собрался", если клиент не просит цену, не просит реквизиты,
+    не просит один бренд и не сравнивает сервис с бесплатными каталогами.
+  not_choose_when: >-
+    Не выбирай эту тему для цены, конкретного бренда, списка брендов, реквизитов,
+    ИНН, оформления на ИП/юрлицо, возврата, проблем доступа после оплаты или
+    отдельного возражения по стоимости. Если клиент просит договор, карточку
+    предприятия, реквизиты или шаги оформления, это скорее `legal_entity_purchase_flow`.
+
+- intent: purchase_ready
+  label_ru: Готовность к покупке
+  choose_when: >-
+    Пользователь прямо говорит что хочет купить, оформить, подключить доступ,
+    готов двигаться к покупке без отдельного вопроса про ИНН, реквизиты, договор
+    или юридический процесс оформления.
+  not_choose_when: >-
+    Если клиент спрашивает что нужно для оформления, куда отправить ИНН, как оформить
+    на ИП или юрлицо, это уже `legal_entity_purchase_flow`. Вопросы о цене, брендах,
+    возврате, демо и сопротивление оформлению не являются `purchase_ready`.
+
+- intent: legal_entity_purchase_flow
+  label_ru: Оформление для юрлица
+  choose_when: >-
+    Пользователь обсуждает оформление от имени компании или ИП: что нужно для покупки,
+    куда отправить ИНН, какие реквизиты нужны, как оформить на ИП/юрлицо, просит
+    договор, счет, карточку предприятия, обсуждает число доступов, период и способ оплаты.
+  not_choose_when: >-
+    Пользователь пока только выражает общую готовность купить без вопроса про
+    оформление, либо обсуждает цену, бренды, демо или возврат.
+
+- intent: payment_without_details
+  label_ru: Оплата без реквизитов
+  choose_when: Пользователь хочет оплатить, но отказывается давать ИНН, название компании, город или другие обязательные реквизиты, пытается обойти регламент.
+  not_choose_when: Пользователь согласен пройти стандартный процесс оформления с реквизитами.
+
+- intent: physical_person_purchase
+  label_ru: Покупка как физлицо
+  choose_when: Пользователь хочет купить или получить доступ как частное лицо, прямо указывает что он не юрлицо или не ИП.
+  not_choose_when: Пользователь не пытается оформить покупку как физлицо, а просит демо, спрашивает причину политики для физлиц или обсуждает покупку от имени компании/ИП.
+
+- intent: no_private_sales_reason
+  label_ru: Почему не продаем физлицам
+  choose_when: Пользователь спрашивает именно причину отказа для физлиц, интересуется логикой ограничения и просит объяснить почему продажа только для автобизнеса.
+  not_choose_when: Пользователь не просит объяснение причины, а просто пытается купить как физлицо.
+
+- intent: price_objection
+  label_ru: Возражение по цене
+  choose_when: >-
+    Пользователь возражает что дорого, цена завышена, просит скидку именно из-за
+    дороговизны или выражает недовольство стоимостью после озвученных тарифов.
+  not_choose_when: >-
+    Пользователь нейтрально спрашивает цену или тарифы без возражения. Фразы
+    "сколько стоит", "что по деньгам", "стоимость подписки", "какая цена"
+    не являются `price_objection`.
+
+- intent: competitor_choice
+  label_ru: Выбор конкурента
+  choose_when: Пользователь прямо говорит что уйдет к конкуренту, выберет другое решение из-за цены или условий и сравнивает в пользу конкурента как итоговое решение.
+  not_choose_when: Пользователь лишь сравнивает варианты, но не заявляет о намерении уйти.
+
+- intent: partial_catalog_request
+  label_ru: Только один бренд
+  choose_when: >-
+    Пользователь прямо просит продать не полный EPC Full, а урезанный доступ только
+    к одному бренду или к части каталога запчастей. Это формулировки вроде
+    "можно купить только один бренд", "нужен доступ только к BMW", "только одна марка",
+    "не весь пакет, а только Honda". Речь здесь именно о покупке частичного EPC-
+    доступа вместо полного пакета. Отдельные TIS по брендам автомобилей продаются,
+    поэтому вопрос о TIS Honda или TIS Volvo сам по себе не является `partial_catalog_request`.
+  not_choose_when: >-
+    Пользователь просто спрашивает, есть ли каталог конкретного автомобильного бренда,
+    какой бренд доступен, какие каталоги есть, какой каталог подойдет для марки,
+    или спрашивает цену TIS для бренда автомобиля. Упоминание бренда автомобиля
+    само по себе не означает `partial_catalog_request`.
+
+- intent: demo_access
+  label_ru: Демо-доступ
+  choose_when: >-
+    Пользователь просит тестовый, пробный или бесплатный доступ, включая формулировки
+    про демо на время, бесплатный старт и follow-up вида "мне обещали бесплатно навсегда"
+    в контексте уже обсуждаемого демо.
+  not_choose_when: >-
+    Пользователь не просит тестовый доступ, а обсуждает только платную покупку,
+    тарифы, сравнение сервисов или статус физлица без запроса демо.
+
+- intent: free_catalog_comparison
+  label_ru: Сравнение с бесплатными каталогами
+  choose_when: >-
+    Пользователь сравнивает платный сервис с бесплатными каталогами или бесплатными
+    решениями: чем платный каталог лучше бесплатного, почему стоит платить, чем
+    сервис отличается от бесплатных источников.
+  not_choose_when: >-
+    Не выбирай эту тему для общего вопроса о преимуществах, минусах, возможностях,
+    брендах, цене или демо без явного сравнения с бесплатными решениями. Вопрос
+    `чем EPC отличается от TIS` сам по себе не является `free_catalog_comparison`.
+
+- intent: data_accuracy_doubt
+  label_ru: Сомнение в точности данных
+  choose_when: Пользователь сомневается в актуальности и точности данных, боится ошибок VIN, неверных номеров или устаревшей информации.
+  not_choose_when: Пользователь обсуждает цену или покупку без сомнений в качестве данных.
+
+- intent: api_integration
+  label_ru: API и интеграция
+  choose_when: Пользователь спрашивает про API, интеграцию с 1С, сайтом, CRM или сторонними системами и формат технического подключения.
+  not_choose_when: Пользователь обсуждает только доступ к каталогу без интеграционных требований.
+
+- intent: human_operator_request
+  label_ru: Перевод на менеджера
+  choose_when: Пользователь просит человека, менеджера или оператора, отказывается продолжать диалог с ботом.
+  not_choose_when: Пользователь не просит перевод и задает обычный предметный вопрос по продукту.
+
+- intent: post_payment_access_timing
+  label_ru: Когда доступ после оплаты
+  choose_when: >-
+    Пользователь спрашивает когда активируется доступ после оплаты, через сколько
+    времени он появится и когда можно начинать работу.
+  not_choose_when: >-
+    Пользователь сообщает о фактической проблеме: уже оплатил, но доступа нет,
+    вход не работает или нужно решить инцидент после оплаты.
+
+- intent: post_payment_no_access
+  label_ru: Оплатил, но доступа нет
+  choose_when: >-
+    Пользователь сообщает что оплата прошла, но вход не работает или доступ не выдали,
+    просит решить проблему после оплаты. Сюда же относятся запросы про возврат денег
+    после оплаты или ситуации "если не подошло", "можно вернуть деньги", "как вернуть".
+  not_choose_when: >-
+    Не выбирай эту тему, если клиент только спрашивает сроки активации доступа после
+    оплаты и не сообщает о фактической проблеме или возврате.
+
+- intent: manager_setup_support
+  label_ru: Помощь в запуске и настройке
+  choose_when: >-
+    Пользователь спрашивает будет ли помощь менеджера по старту, настройке и работе
+    с приложением после покупки, просит обучение, сопровождение или помощь в запуске.
+  not_choose_when: >-
+    Пользователь просит просто цены или бренды, без вопроса про сопровождение и запуск.
+    Вопрос "можно ли пользоваться нескольким людям" не относится к `manager_setup_support`.
+
+- intent: macos_support
+  label_ru: Поддержка macOS
+  choose_when: Пользователь спрашивает есть ли работа на Mac или macOS, наличие версии/софта для Apple-устройств.
+  not_choose_when: Пользователь не обсуждает операционную систему.
+
+- intent: nonsense_input
+  label_ru: Непонятный или шумный ввод
+  choose_when: >-
+    Сообщение бессодержательное, состоит из случайных символов, очень короткого шума
+    или не содержит понятного запроса по смыслу.
+  not_choose_when: >-
+    В сообщении есть содержательный вопрос, даже если он короткий или с ошибками.
+    Короткие продуктовые реплики вроде "TIS", "а какие есть", "сколько стоит",
+    "что ты умеешь", "демо", "вольво" не должны падать в `nonsense_input`.
+
+- intent: out_of_scope_request
+  label_ru: Вне профиля компании
+  choose_when: >-
+    Пользователь просит то, что не относится к автокаталогам, техинформации, тарифам,
+    покупке или поддержке сервиса.
+  not_choose_when: >-
+    Сообщение относится к продукту компании и может быть классифицировано одной из
+    профильных тем. Не смешивай осмысленный продуктовый запрос с `out_of_scope_request`.
+
+
+===== the_First_Agent/context/__init__.py =====
+
+
+===== the_First_Agent/context/history_formatter.py =====
+from __future__ import annotations
+
+from src.core.models import ChatMessage
+
+
+def format_history(messages: list[ChatMessage]) -> str:
+    if not messages:
+        return "(история пуста)"
+    return "\n".join(f"{msg.role}: {msg.text}" for msg in messages)
+
+
+===== the_First_Agent/context/prompt_context.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(slots=True)
+class PromptContext:
+    history_text: str
+    user_query: str
+    history_lines: list[str]
+    last_assistant_message: str
+    prompt_before_query: str = ""
+    prompt_after_query: str = ""
+
+    @property
+    def full_text(self) -> str:
+        return f"{self.history_text}\n{self.user_query}".lower()
+
+    @property
+    def history_lower(self) -> str:
+        return self.history_text.lower()
+
+    @property
+    def query_lower(self) -> str:
+        return self.user_query.lower()
+
+
+===== the_First_Agent/context/prompt_context_extractor.py =====
+from __future__ import annotations
+
+import re
+
+from the_First_Agent.context.prompt_context import PromptContext
+
+
+class PromptContextExtractor:
+    def extract(self, prompt: str) -> PromptContext:
+        history_text = self._extract_block(
+            prompt,
+            "Диалог:\n",
+            "\n\nПерефразированная последняя фраза клиента:\n",
+        )
+        prompt_before_query, user_query, prompt_after_query = self._extract_user_query_parts(prompt)
+        history_lines = [line.strip() for line in history_text.splitlines() if line.strip()]
+        return PromptContext(
+            history_text=history_text,
+            user_query=user_query,
+            history_lines=history_lines,
+            last_assistant_message=self._last_assistant_line(history_lines),
+            prompt_before_query=prompt_before_query,
+            prompt_after_query=prompt_after_query,
+        )
+
+    @staticmethod
+    def _extract_block(text: str, start_marker: str, end_marker: str | None) -> str:
+        start_index = text.find(start_marker)
+        if start_index < 0:
+            return ""
+        content_start = start_index + len(start_marker)
+        if end_marker is None:
+            return text[content_start:].strip()
+        end_index = text.find(end_marker, content_start)
+        if end_index < 0:
+            return text[content_start:].strip()
+        return text[content_start:end_index].strip()
+
+    @staticmethod
+    def _extract_user_query_parts(prompt: str) -> tuple[str, str, str]:
+        end_match = re.search(r"\n\n(?:Краткий статус диалога|Контекст диалога|Формат ответа):\n", prompt)
+        if not end_match:
+            return "", "", ""
+        query_end = end_match.start()
+        marker = "Перефразированная последняя фраза клиента:\n"
+        query_start = prompt.rfind(marker, 0, query_end)
+        if query_start < 0:
+            return "", "", ""
+        content_start = query_start + len(marker)
+        return prompt[:content_start], prompt[content_start:query_end].strip(), prompt[query_end:]
+
+    @staticmethod
+    def _last_assistant_line(history_lines: list[str]) -> str:
+        fallback_markers = (
+            "не удалось корректно сформировать ответ",
+            "уточните запрос",
+        )
+        for line in reversed(history_lines):
+            if line.lower().startswith(("assistant:", "бот:")):
+                raw = line.split(":", 1)[1].strip()
+                low = raw.lower()
+                if any(marker in low for marker in fallback_markers):
+                    continue
+                return raw
+        for line in reversed(history_lines):
+            raw = line.split(":", 1)[1].strip() if ":" in line else line
+            low = raw.lower()
+            if any(marker in low for marker in fallback_markers):
+                continue
+            if "?" in raw:
+                return raw
+        if history_lines:
+            raw = history_lines[-1]
+            final = raw.split(":", 1)[1].strip() if ":" in raw else raw
+            low = final.lower()
+            if any(marker in low for marker in fallback_markers):
+                return ""
+            return final
+        return ""
+
+
+===== the_First_Agent/legacy/__init__.py =====
+
+
+===== the_First_Agent/orchestrator/__init__.py =====
+
+
+===== the_First_Agent/orchestrator/topic_classifier.py =====
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from src.core.diff_utils import dict_diff
+from src.core.interfaces import LLMProvider
+from src.core.models import SessionState, TopicClassificationResult
+from the_First_Agent.config.intent_config_loader import IntentConfigLoader
+from the_First_Agent.context.prompt_context import PromptContext
+from the_First_Agent.context.prompt_context_extractor import PromptContextExtractor
+from the_First_Agent.parsing.direct_parser import DirectClassificationParser
+from the_First_Agent.preprocessing.input_normalizer import InputNormalizationService
+from the_First_Agent.preprocessing.query_rewriter import QueryRewriteService
+
+
+class TopicClassifier:
+    _SCHEMA_RETRY_LIMIT = 1
+    _PRICING_TOPIC_IDS = {"epc_tariffs", "tis_tariffs"}
+    _SCHEMA_RETRY_PREFIX = (
+        "\n\nТвоя предыдущая попытка нарушила формат JSON.\n"
+        "Ошибка схемы:\n"
+        "{validation_error}\n\n"
+        "Исправь ответ и верни только JSON точно в этом формате:\n"
+        "- intent_1 обязателен\n"
+        "- intent_2 либо null, либо объект\n"
+        "- внутри intent можно использовать только поля intent_id, score, reason\n"
+        "- не используй поля label, intent, confidence\n"
+        "- не добавляй текст вне JSON\n"
+    )
+
+    def __init__(
+        self,
+        llm_provider: LLMProvider,
+        topic_ids: set[str],
+        topic_titles_by_id: dict[str, str] | None = None,
+        intents_config_path: Path | None = None,
+        brands_file_path: Path | None = None,
+    ) -> None:
+        self._llm = llm_provider
+        self._topic_ids = topic_ids
+        self._topic_titles_by_id = dict(topic_titles_by_id or {})
+        project_root = Path(__file__).resolve().parents[2]
+        intents_path = intents_config_path or (project_root / "src/config/config_intents.yaml")
+        brands_path = brands_file_path or (project_root / "src/config/brands.yaml")
+        self._intent_config = IntentConfigLoader(intents_path, brands_path).load()
+        self._extractor = PromptContextExtractor()
+        self._brand_aliases = [str(item) for item in self._intent_config.get("signals", {}).get("brand_aliases", []) if str(item).strip()]
+        self._normalizer = InputNormalizationService()
+        self._rewriter = QueryRewriteService(self._brand_aliases)
+        self._parser = DirectClassificationParser(self._topic_titles_by_id)
+
+    def classify(self, prompt: str, session_state: SessionState | None = None) -> TopicClassificationResult:
+        context = self._extractor.extract(prompt)
+        normalized = self._normalizer.normalize(context.user_query)
+        normalized_query = str(normalized["normalized_query"])
+        rewrite_trace = self._rewriter.rewrite(context, session_state, normalized_query)
+        rewritten_query = str(rewrite_trace["rewritten_query"])
+        effective_prompt = self._rebuild_prompt(context, prompt, rewritten_query)
+        parsed_result, llm_attempts = self._generate_with_schema_retry(effective_prompt)
+        parsed_result = self._apply_topic_post_rules(parsed_result, normalized_query, session_state)
+        topic_ids = list(parsed_result["topic_ids"]) or [self._fallback_topic_id(str(normalized["lowered_query"]))]
+        parser_fallback_reason = str(parsed_result.get("fallback_reason", "")).strip()
+        state_after = self._build_state_snapshot(
+            session_state=session_state,
+            topic_ids=topic_ids,
+            context=context,
+            rewritten_query=rewritten_query,
+        )
+        active_pipeline = [
+            "extract_context",
+            "normalize_input",
+            "rewrite_query",
+            "build_prompt",
+            "llm_generate_json",
+            "parse_model_json",
+            "build_state_snapshot",
+        ]
+        state_before = session_state.as_dict() if session_state else SessionState().as_dict()
+        state_after_dict = state_after.as_dict()
+        confidence = float(parsed_result["confidence"])
+        reason = str(parsed_result["reason"])
+        intent_scores = list(parsed_result.get("intent_scores", []))
+        intent_details = list(parsed_result.get("intent_details", []))
+        intent_reasons = list(parsed_result.get("intent_reasons", []))
+        schema_retry_used = len(llm_attempts) > 1
+        if not intent_scores:
+            intent_scores = [{"intent": topic_id, "score": confidence} for topic_id in topic_ids]
+        first_agent_output = {
+            "original_query": context.user_query,
+            "normalized_query": normalized_query,
+            "rewritten_query": rewritten_query,
+            "prompt": effective_prompt,
+            "raw_llm_response": parsed_result["raw"],
+            "parsed_json": parsed_result["parsed"],
+            "topic_ids": list(topic_ids),
+            "intent_scores": intent_scores,
+            "intent_details": intent_details,
+            "intent_reasons": intent_reasons,
+            "confidence": confidence,
+            "reason": reason,
+            "state_snapshot": state_after_dict,
+            "llm_attempts": llm_attempts,
+            "schema_retry_used": schema_retry_used,
+        }
+        first_agent_trace = {
+            "pipeline_steps": [
+                {
+                    "step": "extract_context",
+                    "actor": "PromptContextExtractor",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {},
+                    "after": {"user_query": context.user_query},
+                },
+                {
+                    "step": "normalize_input",
+                    "actor": "InputNormalizationService",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {"query": context.user_query},
+                    "after": {"normalized_query": normalized_query},
+                },
+                {
+                    "step": "rewrite_query",
+                    "actor": "QueryRewriteService",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {"query": normalized_query},
+                    "after": {
+                        "rewritten_query": rewritten_query,
+                        "rewrite_mode": str(rewrite_trace.get("mode", "")),
+                    },
+                },
+                {
+                    "step": "build_prompt",
+                    "actor": "TopicClassifier",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {"prompt_user_query": context.user_query},
+                    "after": {"prompt_user_query": rewritten_query},
+                },
+                {
+                    "step": "llm_generate_json",
+                    "actor": "LLMProvider",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {},
+                    "after": {
+                        "raw_response_present": bool(str(parsed_result["raw"]).strip()),
+                        "attempt_count": len(llm_attempts),
+                        "schema_retry_used": schema_retry_used,
+                    },
+                },
+                {
+                    "step": "parse_model_json",
+                    "actor": "DirectClassificationParser",
+                    "target": "first_agent_output",
+                    "status": "ok",
+                    "before": {"raw_llm_response": parsed_result["raw"]},
+                    "after": {
+                        "topic_ids": list(topic_ids),
+                        "confidence": confidence,
+                        "fallback_used": bool(parsed_result["fallback_used"]),
+                        "fallback_reason": parser_fallback_reason,
+                        "validation_errors": list(parsed_result.get("validation_errors", [])),
+                        "schema_retry_used": schema_retry_used,
+                    },
+                },
+                {
+                    "step": "build_state_snapshot",
+                    "actor": "TopicClassifier",
+                    "target": "state_snapshot",
+                    "status": "ok",
+                    "before": state_before,
+                    "after": state_after_dict,
+                    "diff": dict_diff(state_before, state_after_dict),
+                },
+            ],
+        }
+
+        return TopicClassificationResult(
+            topic_ids=topic_ids,
+            confidence=confidence,
+            reason=reason,
+            rule_trace=[],
+            state_snapshot=state_after_dict,
+            diagnostics={
+                "active_pipeline": active_pipeline,
+                "pipeline_version": "first_agent_direct_v1",
+                "pipeline_contract": {
+                    "source_of_truth": "model_json",
+                    "post_model_topic_override": False,
+                    "rewrite_enabled": True,
+                    "input_normalization_enabled": True,
+                },
+                "raw_llm_response": parsed_result["raw"],
+                "parsed_json": parsed_result["parsed"],
+                "normalization_trace": normalized,
+                "rewrite_trace": rewrite_trace,
+                "first_agent_output": first_agent_output,
+                "first_agent_data": {},
+                "first_agent_trace": first_agent_trace,
+                "validation_errors": list(parsed_result.get("validation_errors", [])),
+                "parser_fallback_reason": parser_fallback_reason,
+                "llm_attempts": llm_attempts,
+                "schema_retry_used": schema_retry_used,
+                "state_before": state_before,
+                "state_after": state_after_dict,
+                "state_diff": dict_diff(state_before, state_after_dict),
+                "state_trace": [
+                    {"step": "extract_context", "user_query": context.user_query},
+                    {"step": "normalize_input", "normalized_query": normalized_query},
+                    {
+                        "step": "rewrite_query",
+                        "rewrite_mode": str(rewrite_trace.get("mode", "")),
+                        "rewritten_query": rewritten_query,
+                        "changed": bool(rewrite_trace.get("changed", False)),
+                    },
+                    {"step": "build_prompt", "prompt_rewritten": bool(rewrite_trace.get("changed", False))},
+                    {
+                        "step": "llm_generate_json",
+                        "raw_response_present": bool(str(parsed_result["raw"]).strip()),
+                        "attempt_count": len(llm_attempts),
+                        "schema_retry_used": schema_retry_used,
+                    },
+                    {
+                        "step": "parse_model_json",
+                        "topics": topic_ids,
+                        "fallback_used": bool(parsed_result["fallback_used"]),
+                        "fallback_reason": parser_fallback_reason,
+                        "validation_errors": list(parsed_result.get("validation_errors", [])),
+                    },
+                    {"step": "build_state_snapshot", "last_primary_topic": topic_ids[0] if topic_ids else "out_of_scope_request"},
+                ],
+            },
+            classifier_source="direct_json",
+            fallback_reason=parser_fallback_reason if parsed_result["fallback_used"] else "",
+        )
+
+    def _apply_topic_post_rules(
+        self,
+        parsed_result: dict[str, object],
+        normalized_query: str,
+        session_state: SessionState | None,
+    ) -> dict[str, object]:
+        topic_ids = list(parsed_result.get("topic_ids", []))
+        if not topic_ids:
+            return parsed_result
+
+        query_tokens = set(re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", str(normalized_query).lower().replace("ё", "е")))
+        pricing_tokens = {"сколько", "цена", "стоимость", "подписка", "доступ", "деньгам"}
+        refund_tokens = {"вернуть", "возврат", "деньги", "оплатил", "оплаты", "подошло", "доступа"}
+        explicit_tis = {"tis", "тис"} & query_tokens
+        explicit_epc = {"epc", "епс"} & query_tokens
+        has_brand_context = bool(session_state and str(session_state.last_mentioned_brand).strip())
+
+        if query_tokens & refund_tokens and set(topic_ids).issubset(self._PRICING_TOPIC_IDS):
+            return self._replace_with_single_topic(
+                parsed_result,
+                topic_id="post_payment_no_access",
+                score=0.95,
+                reason="Клиент спрашивает о возврате денег или проблеме после оплаты, это post-payment кейс, а не вопрос о тарифах.",
+            )
+
+        general_pricing = bool(query_tokens & pricing_tokens) and not explicit_tis and not explicit_epc and not has_brand_context
+        if general_pricing and len(topic_ids) == 1 and topic_ids[0] in self._PRICING_TOPIC_IDS:
+            missing_topic = "tis_tariffs" if topic_ids[0] == "epc_tariffs" else "epc_tariffs"
+            return self._append_second_topic(
+                parsed_result,
+                topic_id=missing_topic,
+                score=0.85,
+                reason="Общий вопрос о стоимости без уточнения бренда или продукта покрывает обе продуктовые категории.",
+            )
+        return parsed_result
+
+    def _replace_with_single_topic(
+        self,
+        parsed_result: dict[str, object],
+        topic_id: str,
+        score: float,
+        reason: str,
+    ) -> dict[str, object]:
+        updated = dict(parsed_result)
+        updated["topic_ids"] = [topic_id]
+        updated["intent_scores"] = [{"intent": topic_id, "intent_id": topic_id, "score": score}]
+        updated["intent_reasons"] = [reason]
+        updated["intent_details"] = [{"intent": topic_id, "intent_id": topic_id, "score": score, "reason": reason}]
+        updated["confidence"] = score
+        updated["reason"] = reason
+        return updated
+
+    def _append_second_topic(
+        self,
+        parsed_result: dict[str, object],
+        topic_id: str,
+        score: float,
+        reason: str,
+    ) -> dict[str, object]:
+        updated = dict(parsed_result)
+        topic_ids = list(updated.get("topic_ids", []))
+        if topic_id in topic_ids or len(topic_ids) >= 2:
+            return updated
+        topic_ids.append(topic_id)
+        updated["topic_ids"] = topic_ids
+
+        intent_scores = list(updated.get("intent_scores", []))
+        intent_scores.append({"intent": topic_id, "intent_id": topic_id, "score": score})
+        updated["intent_scores"] = intent_scores[:2]
+
+        intent_reasons = list(updated.get("intent_reasons", []))
+        intent_reasons.append(reason)
+        updated["intent_reasons"] = intent_reasons[:2]
+
+        intent_details = list(updated.get("intent_details", []))
+        intent_details.append({"intent": topic_id, "intent_id": topic_id, "score": score, "reason": reason})
+        updated["intent_details"] = intent_details[:2]
+
+        updated["reason"] = "; ".join(str(item).strip() for item in updated["intent_reasons"] if str(item).strip())
+        return updated
+
+    def _generate_with_schema_retry(self, effective_prompt: str) -> tuple[dict[str, object], list[dict[str, object]]]:
+        attempts: list[dict[str, object]] = []
+        current_prompt = effective_prompt
+        for attempt_index in range(self._SCHEMA_RETRY_LIMIT + 1):
+            raw_response = self._llm.generate_json(current_prompt)
+            parsed_result = self._parser.parse(raw_response)
+            validation_errors = list(parsed_result.get("validation_errors", []))
+            fallback_reason = str(parsed_result.get("fallback_reason", ""))
+            attempts.append(
+                {
+                    "attempt": attempt_index + 1,
+                    "feedback_applied": attempt_index > 0,
+                    "prompt_suffix": current_prompt[len(effective_prompt):],
+                    "raw_llm_response": raw_response,
+                    "parsed_json": parsed_result.get("parsed", {}),
+                    "validation_errors": validation_errors,
+                    "fallback_reason": fallback_reason,
+                }
+            )
+            if fallback_reason != "schema_validation_failed":
+                return parsed_result, attempts
+            if attempt_index < self._SCHEMA_RETRY_LIMIT:
+                current_prompt = self._build_schema_feedback_prompt(effective_prompt, validation_errors)
+        return parsed_result, attempts
+
+    @classmethod
+    def _build_schema_feedback_prompt(cls, effective_prompt: str, validation_errors: list[object]) -> str:
+        validation_error = str(validation_errors[0]).strip() if validation_errors else "Неизвестная ошибка схемы."
+        return effective_prompt + cls._SCHEMA_RETRY_PREFIX.format(validation_error=validation_error)
+
+    @staticmethod
+    def _rebuild_prompt(context: PromptContext, original_prompt: str, rewritten_query: str) -> str:
+        if not context.prompt_before_query:
+            return original_prompt
+        return f"{context.prompt_before_query}{rewritten_query}{context.prompt_after_query}"
+
+    def _build_state_snapshot(
+        self,
+        session_state: SessionState | None,
+        topic_ids: list[str],
+        context: PromptContext,
+        rewritten_query: str,
+    ) -> SessionState:
+        base = session_state.as_dict() if session_state else SessionState().as_dict()
+        primary_topic = topic_ids[0] if topic_ids else "out_of_scope_request"
+        secondary_topics = list(topic_ids[1:]) if len(topic_ids) > 1 else []
+        base["last_primary_topic"] = primary_topic
+        base["last_topic_ids"] = list(topic_ids)
+        base["last_secondary_topics"] = secondary_topics
+        base["last_focus_topic"] = primary_topic
+        base["last_bot_question_type"] = base.get("last_question_type", "unknown")
+        base["active_request_kind"] = "multi_intent" if len(topic_ids) > 1 else primary_topic
+        base["last_mentioned_brand"] = self._resolve_last_brand(context, session_state, rewritten_query)
+        return SessionState(**base)
+
+    def _resolve_last_brand(
+        self,
+        context: PromptContext,
+        session_state: SessionState | None,
+        query: str,
+    ) -> str:
+        if session_state and session_state.last_mentioned_brand.strip():
+            return session_state.last_mentioned_brand.strip()
+        haystack = f"{context.history_text}\n{query}".lower()
+        last_match = ""
+        for alias in self._brand_aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", haystack):
+                last_match = alias
+        return last_match.title() if last_match else ""
+
+    @staticmethod
+    def _fallback_topic_id(lowered_query: str) -> str:
+        if not lowered_query or re.fullmatch(r"[\W_]+", lowered_query):
+            return "nonsense_input"
+        return "out_of_scope_request"
+
+
+===== the_First_Agent/parsing/__init__.py =====
+
+
+===== the_First_Agent/parsing/direct_parser.py =====
+from __future__ import annotations
+
+import json
+
+from the_First_Agent.parsing.output_schema import FirstAgentOutputSchema
+
+
+class DirectClassificationParser:
+    _INTENT_ID_ALIASES = {
+        "human_request": "human_operator_request",
+        "human_operator": "human_operator_request",
+        "competitor_intent": "competitor_choice",
+        "legal_entity_purchase": "legal_entity_purchase_flow",
+        "specific_brand": "specific_brand_check",
+        "brand_list": "brand_list_request",
+        "company_info": "company_services_info",
+        "mac_os": "macos_support",
+    }
+
+    def __init__(self, topic_titles_by_id: dict[str, str]) -> None:
+        self._topic_titles_by_id = {
+            str(topic_id).strip(): str(title).strip()
+            for topic_id, title in dict(topic_titles_by_id).items()
+            if str(topic_id).strip()
+        }
+        self._topic_ids = set(self._topic_titles_by_id.keys())
+        self._normalized_topic_ids = {
+            self._normalize_intent_id(topic_id): topic_id
+            for topic_id in self._topic_ids
+        }
+        self._normalized_aliases = {
+            self._normalize_intent_id(alias): canonical
+            for alias, canonical in self._INTENT_ID_ALIASES.items()
+            if canonical in self._topic_ids
+        }
+
+    def parse(self, raw: str) -> dict[str, object]:
+        parsed, validation_error = self._safe_parse(raw)
+        if validation_error:
+            topics, intent_scores, intent_reasons, intent_details, extraction_meta = [], [], [], [], {
+                "seen_intent_object": False,
+                "seen_intent_id": False,
+                "unknown_intent_ids": [],
+            }
+        else:
+            topics, intent_scores, intent_reasons, intent_details, extraction_meta = self._extract_topics(parsed)
+        reason = self._build_combined_reason(intent_reasons)
+        primary_score = float(intent_scores[0]["score"]) if intent_scores else 0.0
+        fallback_reason = self._resolve_fallback_reason(
+            parsed=parsed,
+            topics=topics,
+            validation_error=validation_error,
+            extraction_meta=extraction_meta,
+        )
+        return {
+            "raw": raw,
+            "parsed": parsed,
+            "topic_ids": topics,
+            "intent_scores": intent_scores,
+            "intent_reasons": intent_reasons,
+            "intent_details": intent_details,
+            "confidence": primary_score,
+            "reason": reason,
+            "fallback_used": bool(fallback_reason),
+            "fallback_reason": fallback_reason,
+            "validation_errors": [validation_error] if validation_error else [],
+        }
+
+    def _extract_topics(
+        self,
+        parsed: dict[str, object],
+    ) -> tuple[list[str], list[dict[str, object]], list[str], list[dict[str, object]], dict[str, object]]:
+        topics: list[str] = []
+        scores: list[dict[str, object]] = []
+        reasons: list[str] = []
+        details: list[dict[str, object]] = []
+        seen_intent_object = False
+        seen_intent_id = False
+        unknown_intent_ids: list[str] = []
+        for key in ("intent_1", "intent_2"):
+            value = parsed.get(key)
+            if not isinstance(value, dict):
+                continue
+            seen_intent_object = True
+            raw_intent_id = str(value.get("intent_id", "")).strip()
+            if raw_intent_id:
+                seen_intent_id = True
+            topic_id = self._canonical_intent_id(raw_intent_id)
+            if not topic_id:
+                if raw_intent_id:
+                    unknown_intent_ids.append(raw_intent_id)
+                continue
+            if topic_id in topics:
+                continue
+            score = self._safe_score(value.get("score"))
+            reason = str(value.get("reason", "")).strip() or self._build_reason_from_intent(topic_id)
+            topics.append(topic_id)
+            scores.append({"intent": topic_id, "score": score, "intent_id": topic_id})
+            reasons.append(reason)
+            details.append(
+                {
+                    "intent": topic_id,
+                    "intent_id": topic_id,
+                    "score": score,
+                    "reason": reason,
+                }
+            )
+        return (
+            topics[:2],
+            scores[:2],
+            reasons[:2],
+            details[:2],
+            {
+                "seen_intent_object": seen_intent_object,
+                "seen_intent_id": seen_intent_id,
+                "unknown_intent_ids": unknown_intent_ids[:2],
+            },
+        )
+
+    @staticmethod
+    def _resolve_fallback_reason(
+        parsed: dict[str, object],
+        topics: list[str],
+        validation_error: str,
+        extraction_meta: dict[str, object],
+    ) -> str:
+        if validation_error.startswith("SCHEMA_VALIDATION:"):
+            return "schema_validation_failed"
+        if validation_error or not parsed:
+            return "json_parse_failed"
+        if topics:
+            return ""
+        unknown_intent_ids = extraction_meta.get("unknown_intent_ids", [])
+        if isinstance(unknown_intent_ids, list) and unknown_intent_ids:
+            return "unknown_intent_id"
+        if bool(extraction_meta.get("seen_intent_object")) and not bool(extraction_meta.get("seen_intent_id")):
+            return "missing_intent_id"
+        return "empty_topics_after_parse"
+
+    @staticmethod
+    def _build_reason_from_intent(intent_id: str) -> str:
+        if intent_id:
+            return f"Клиентский запрос отнесен к теме `{intent_id}`."
+        return "Fallback: invalid classifier output."
+
+    def _canonical_intent_id(self, intent_id: str) -> str:
+        normalized = self._normalize_intent_id(intent_id)
+        if not normalized:
+            return ""
+        direct = self._normalized_topic_ids.get(normalized, "")
+        if direct:
+            return direct
+        return self._normalized_aliases.get(normalized, "")
+
+    @staticmethod
+    def _normalize_intent_id(value: str) -> str:
+        return str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    @staticmethod
+    def _build_combined_reason(intent_reasons: list[str]) -> str:
+        normalized = [str(item).strip() for item in intent_reasons if str(item).strip()]
+        if not normalized:
+            return "Fallback: invalid classifier output."
+        if len(normalized) == 1:
+            return normalized[0]
+        return "; ".join(normalized[:2])
+
+    def _safe_parse(self, raw: str) -> tuple[dict[str, object], str]:
+        cleaned = self._extract_json(raw)
+        if not cleaned:
+            return {}, "Пустой или нераспознанный JSON в ответе модели."
+        try:
+            parsed = json.loads(cleaned)
+        except Exception as exc:
+            return {}, str(exc)
+
+        if not isinstance(parsed, dict):
+            return {}, "SCHEMA_VALIDATION: Корневой JSON-объект должен быть объектом."
+
+        try:
+            validated = FirstAgentOutputSchema.model_validate(parsed)
+            return validated.model_dump(), ""
+        except Exception as exc:
+            return parsed, f"SCHEMA_VALIDATION: {exc}"
+
+    @staticmethod
+    def _extract_json(raw: str) -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _, end_index = decoder.raw_decode(text[index:])
+                candidate = text[index:index + end_index].strip()
+                if candidate.startswith("{") and candidate.endswith("}"):
+                    return candidate
+            except json.JSONDecodeError:
+                continue
+        return ""
+
+    @staticmethod
+    def _safe_score(value: object) -> float:
+        try:
+            parsed = float(value)
+            return max(0.0, min(1.0, parsed))
+        except (TypeError, ValueError):
+            return 0.0
+
+
+===== the_First_Agent/parsing/output_schema.py =====
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class IntentChoice(BaseModel):
+    intent_id: str = Field(min_length=1, description="Системный идентификатор темы строго из списка тем в prompt")
+    score: float = Field(ge=0.0, le=1.0, description="Оценка релевантности темы от 0 до 1")
+    reason: str = Field(min_length=1, description="Короткое объяснение, почему выбрана эта тема")
+
+
+class FirstAgentOutputSchema(BaseModel):
+    intent_1: IntentChoice = Field(description="Главная тема для ответа на последнюю фразу клиента")
+    intent_2: IntentChoice | None = Field(
+        default=None,
+        description="Вторая тема, если в последней фразе клиента действительно есть второй смысл",
+    )
+
+
+===== the_First_Agent/preprocessing/__init__.py =====
+
+
+===== the_First_Agent/preprocessing/input_normalizer.py =====
+from __future__ import annotations
+
+import re
+
+
+class InputNormalizationService:
+    def normalize(self, query: str) -> dict[str, object]:
+        original = query or ""
+        stripped = original.strip()
+        collapsed = re.sub(r"\s+", " ", stripped)
+        lowered = collapsed.lower()
+        return {
+            "original_query": original,
+            "normalized_query": collapsed,
+            "lowered_query": lowered,
+            "changed": collapsed != original,
+        }
+
+
+===== the_First_Agent/preprocessing/query_rewriter.py =====
+from __future__ import annotations
+
+import re
+
+from src.core.models import SessionState
+from the_First_Agent.context.prompt_context import PromptContext
+
+
+class QueryRewriteService:
+    def __init__(self, brand_aliases: list[str]) -> None:
+        self._brand_aliases = [alias for alias in brand_aliases if alias]
+
+    def rewrite(
+        self,
+        context: PromptContext,
+        session_state: SessionState | None,
+        normalized_query: str,
+    ) -> dict[str, object]:
+        original = normalized_query
+        query = normalized_query.lower()
+        last_bot = context.last_assistant_message.strip()
+        rewrite_mode = "direct"
+        reason = "No rewrite needed."
+        rewritten = original
+        last_brand = self._resolve_last_brand(context, session_state)
+        last_focus = session_state.last_focus_topic if session_state else "out_of_scope_request"
+
+        if self._is_short_answer(query) and last_bot:
+            rewrite_mode = "answer_to_bot_question"
+            rewritten = f"Клиент отвечает '{original}' на предыдущий вопрос бота: {last_bot}"
+            reason = "Short answer rewritten through the previous bot question."
+        elif re.search(r"\b(на него|по нему|для него|него|неё|нее|них|нему|ней|этот|эта|эту|эти)\b", query) and last_brand:
+            rewrite_mode = "anaphora_followup"
+            rewritten = self._replace_anaphora_with_brand(original, last_brand)
+            reason = "Anaphora rewritten using the latest brand from history."
+        elif self._is_short_catalog_followup(query, last_focus, context.history_lower):
+            rewrite_mode = "short_catalog_followup"
+            rewritten = self._rewrite_short_catalog_followup(query, last_focus, last_brand)
+            reason = "Short catalog follow-up expanded using dialogue context."
+        elif self._is_checkout_pushback(query):
+            rewrite_mode = "direct"
+            rewritten = original
+            reason = "Checkout pushback kept as-is to avoid turning resistance into purchase intent."
+        elif re.search(r"\b(оформ|оплат|счет|сч[её]т|qr|купить|договор|что нужно)\w*\b", query):
+            rewrite_mode = "procedural_followup"
+            rewritten = f"Клиент уточняет процесс оформления: {original}"
+            reason = "Procedural follow-up rewritten into a full process question."
+
+        return {
+            "mode": rewrite_mode,
+            "original_query": original,
+            "rewritten_query": rewritten,
+            "changed": rewritten != original,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _is_short_answer(query: str) -> bool:
+        return query.strip() in {"да", "нет", "ага", "неа", "ок", "хорошо", "являюсь"}
+
+    @staticmethod
+    def _is_checkout_pushback(query: str) -> bool:
+        return any(
+            marker in query
+            for marker in (
+                "куда ты меня оформлять собрался",
+                "куда вы меня оформлять собрался",
+                "куда вы меня оформлять собрались",
+                "зачем вы меня оформляете",
+                "зачем ты меня оформляешь",
+            )
+        )
+
+    def _resolve_last_brand(self, context: PromptContext, session_state: SessionState | None) -> str:
+        if session_state and session_state.last_mentioned_brand.strip():
+            return session_state.last_mentioned_brand.strip()
+        haystack = f"{context.history_text}\n{context.user_query}".lower()
+        last_match = ""
+        for alias in self._brand_aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", haystack):
+                last_match = alias
+        return last_match.title() if last_match else ""
+
+    @staticmethod
+    def _replace_anaphora_with_brand(query: str, brand: str) -> str:
+        replaced = re.sub(r"\b(на него|по нему|для него)\b", f"для {brand}", query, flags=re.IGNORECASE)
+        return re.sub(r"\b(него|неё|нее|них|нему|ней|этот|эта|эту|эти)\b", brand, replaced, flags=re.IGNORECASE)
+
+    @staticmethod
+    def _is_short_catalog_followup(query: str, last_focus: str, history_text: str) -> bool:
+        if re.fullmatch(r"(все|всё|а?\s*какие есть|еще какие|ещ[её]|по грузовым|по легковым|по спецтехнике)", query):
+            return True
+        if last_focus in {"brand_list_request", "specific_brand_check", "company_services_info"}:
+            return len(query.split()) <= 4 and any(token in query for token in ("какие", "все", "еще", "груз"))
+        return False
+
+    @staticmethod
+    def _rewrite_short_catalog_followup(query: str, last_focus: str, last_brand: str) -> str:
+        if "груз" in query:
+            return "Какие каталоги есть по грузовой технике и какие бренды доступны?"
+        if query in {"все", "всё"}:
+            return "Какие бренды и каталоги доступны полностью?"
+        if last_brand:
+            return f"Какие еще каталоги доступны помимо {last_brand}?"
+        if last_focus == "specific_brand_check":
+            return "Какие еще бренды и каталоги есть в наличии?"
+        return "Какие каталоги и бренды есть в наличии?"
+
+
+===== the_First_Agent/prompting/__init__.py =====
+from __future__ import annotations
+
+
+
+===== the_First_Agent/prompting/topic_prompt_block_catalog.py =====
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+import yaml
+
+from the_First_Agent.config.resource_paths import SEMANTIC_INTENTS_PATH
+
+
+@dataclass(frozen=True, slots=True)
+class PromptBlock:
+    name: str
+    required_intent_ids: frozenset[str]
+    text: str
+    section: str
+
+
+class TopicPromptBlockCatalog:
+    _BACKTICK_ID_RE = re.compile(r"`([a-z_]+)`")
+    _JSON_INTENT_ID_RE = re.compile(r'"intent_id"\s*:\s*"([a-z_]+)"')
+
+    def __init__(self) -> None:
+        self._known_intent_ids = self._load_known_intent_ids()
+        self._blocks = self._build_blocks()
+
+    def blocks(self) -> tuple[PromptBlock, ...]:
+        return self._blocks
+
+    def known_intent_ids(self) -> frozenset[str]:
+        return frozenset(self._known_intent_ids)
+
+    def referenced_intent_ids(self, block: PromptBlock) -> frozenset[str]:
+        referenced: set[str] = set()
+        for pattern in (self._BACKTICK_ID_RE, self._JSON_INTENT_ID_RE):
+            for match in pattern.findall(block.text):
+                if match in self._known_intent_ids:
+                    referenced.add(match)
+        return frozenset(referenced)
+
+    def effective_required_intent_ids(self, block: PromptBlock) -> frozenset[str]:
+        return frozenset(set(block.required_intent_ids) | set(self.referenced_intent_ids(block)))
+
+    def block_is_compatible(self, block: PromptBlock, selected_ids: set[str]) -> bool:
+        return self.effective_required_intent_ids(block).issubset(selected_ids)
+
+    def validate_block_definitions(self) -> list[str]:
+        errors: list[str] = []
+        for block in self._blocks:
+            declared_unknown = sorted(set(block.required_intent_ids) - self._known_intent_ids)
+            if declared_unknown:
+                errors.append(
+                    f"{block.name}: unknown required_intent_ids {declared_unknown}"
+                )
+            referenced = self.referenced_intent_ids(block)
+            undeclared = sorted(set(referenced) - set(block.required_intent_ids))
+            if undeclared:
+                errors.append(
+                    f"{block.name}: referenced intent_ids not declared in required_intent_ids {undeclared}"
+                )
+        return errors
+
+    @staticmethod
+    def _load_known_intent_ids() -> set[str]:
+        raw = yaml.safe_load(SEMANTIC_INTENTS_PATH.read_text(encoding="utf-8")) or {}
+        known: set[str] = set()
+        for item in raw.get("intents", []):
+            if not isinstance(item, dict):
+                continue
+            intent_id = str(item.get("intent", "")).strip()
+            if intent_id:
+                known.add(intent_id)
+        return known
+
+    @staticmethod
+    def _build_blocks() -> tuple[PromptBlock, ...]:
+        return (
+            PromptBlock(
+                name="short_answer_brand_list",
+                required_intent_ids=frozenset({"brand_list_request"}),
+                section="rules",
+                text="- Если бот спрашивал бренды для TIS, а клиент отвечает `все`, `а какие есть`, `еще какие`, выбирай `brand_list_request`.",
+            ),
+            PromptBlock(
+                name="short_answer_legal_status",
+                required_intent_ids=frozenset({"legal_entity_purchase_flow"}),
+                section="rules",
+                text="- Если бот спрашивал про статус клиента, а клиент отвечает `ИП`, `юрлицо`, `являюсь`, `yes, legal`, выбирай `legal_entity_purchase_flow`.",
+            ),
+            PromptBlock(
+                name="short_answer_purchase_ready",
+                required_intent_ids=frozenset({"purchase_ready"}),
+                section="rules",
+                text="- Если бот спрашивал `оформляем?`, а клиент отвечает `да`, выбирай `purchase_ready`.",
+            ),
+            PromptBlock(
+                name="short_answer_demo",
+                required_intent_ids=frozenset({"demo_access"}),
+                section="rules",
+                text="- Если бот спрашивал про демо, а клиент отвечает `да`, выбирай `demo_access`.",
+            ),
+            PromptBlock(
+                name="general_pricing_dual",
+                required_intent_ids=frozenset({"epc_tariffs", "tis_tariffs"}),
+                section="rules",
+                text="- Общий вопрос о стоимости без уточнения EPC/TIS возвращает две темы: `epc_tariffs` и `tis_tariffs`.",
+            ),
+            PromptBlock(
+                name="refund_case",
+                required_intent_ids=frozenset({"post_payment_no_access"}),
+                section="rules",
+                text="- Фразы `можно вернуть деньги`, `если не подошло`, `оплатил, но доступа нет` ведут в `post_payment_no_access`, а не в тарифы.",
+            ),
+            PromptBlock(
+                name="post_payment_timing",
+                required_intent_ids=frozenset({"post_payment_access_timing"}),
+                section="rules",
+                text="- Фразы `после оплаты доступ сразу появится` и `через сколько доступ после оплаты` ведут в `post_payment_access_timing`.",
+            ),
+            PromptBlock(
+                name="specific_brand_single_brand",
+                required_intent_ids=frozenset({"specific_brand_check"}),
+                section="rules",
+                text="- Если последняя фраза состоит только из названия автомобильной марки или похожа на название марки, выбирай `specific_brand_check`, если предыдущий вопрос не требовал список брендов.",
+            ),
+            PromptBlock(
+                name="human_operator_direct",
+                required_intent_ids=frozenset({"human_operator_request"}),
+                section="rules",
+                text="- Если клиент просит человека, менеджера или оператора, выбирай `human_operator_request`.",
+            ),
+            PromptBlock(
+                name="company_services_pushback",
+                required_intent_ids=frozenset({"company_services_info"}),
+                section="rules",
+                text="- Если клиент выражает сопротивление оформлению (`это куда ты меня оформлять собрался`), это не готовность к покупке; в таком случае безопаснее `company_services_info`.",
+            ),
+            PromptBlock(
+                name="priority_post_payment",
+                required_intent_ids=frozenset({"post_payment_no_access"}),
+                section="priorities",
+                text="`post_payment_no_access` — если есть возврат, оплата, проблема доступа после оплаты.",
+            ),
+            PromptBlock(
+                name="priority_human_operator",
+                required_intent_ids=frozenset({"human_operator_request"}),
+                section="priorities",
+                text="`human_operator_request` — если клиент просит человека.",
+            ),
+            PromptBlock(
+                name="priority_price_objection_competitor",
+                required_intent_ids=frozenset({"price_objection", "competitor_choice"}),
+                section="priorities",
+                text="`price_objection`, `competitor_choice` — если клиент спорит с ценой или уходит.",
+            ),
+            PromptBlock(
+                name="priority_pricing",
+                required_intent_ids=frozenset({"epc_tariffs", "tis_tariffs"}),
+                section="priorities",
+                text="`epc_tariffs`, `tis_tariffs` — если есть вопрос о цене.",
+            ),
+            PromptBlock(
+                name="priority_brand_intents",
+                required_intent_ids=frozenset({"specific_brand_check", "brand_list_request", "partial_catalog_request"}),
+                section="priorities",
+                text="`specific_brand_check`, `brand_list_request`, `partial_catalog_request` — если вопрос про бренды.",
+            ),
+            PromptBlock(
+                name="priority_company_services",
+                required_intent_ids=frozenset({"company_services_info"}),
+                section="priorities",
+                text="`company_services_info` — если вопрос общий про возможности, пользу или условия работы.",
+            ),
+            PromptBlock(
+                name="priority_fallbacks",
+                required_intent_ids=frozenset({"out_of_scope_request", "nonsense_input"}),
+                section="priorities",
+                text="`out_of_scope_request`, `nonsense_input` — только если ничего профильного нет.",
+            ),
+            PromptBlock(
+                name="conflict_specific_vs_services",
+                required_intent_ids=frozenset({"specific_brand_check", "company_services_info"}),
+                section="conflicts",
+                text="- `specific_brand_check` важнее `company_services_info`, если клиент спрашивает про конкретный автомобильный бренд.",
+            ),
+            PromptBlock(
+                name="conflict_tis_vs_specific_brand",
+                required_intent_ids=frozenset({"tis_tariffs", "specific_brand_check"}),
+                section="conflicts",
+                text="- `tis_tariffs` важнее `specific_brand_check`, если есть вопрос о цене TIS по бренду.",
+            ),
+            PromptBlock(
+                name="conflict_partial_vs_specific_brand",
+                required_intent_ids=frozenset({"partial_catalog_request", "specific_brand_check"}),
+                section="conflicts",
+                text="- `partial_catalog_request` важнее `specific_brand_check`, если клиент просит купить только один бренд вместо полного EPC Full.",
+            ),
+            PromptBlock(
+                name="conflict_post_payment_vs_pricing_epc",
+                required_intent_ids=frozenset({"post_payment_no_access", "epc_tariffs"}),
+                section="conflicts",
+                text="- `post_payment_no_access` важнее `epc_tariffs`, если есть возврат, оплата или проблема доступа после оплаты.",
+            ),
+            PromptBlock(
+                name="conflict_post_payment_vs_pricing_tis",
+                required_intent_ids=frozenset({"post_payment_no_access", "tis_tariffs"}),
+                section="conflicts",
+                text="- `post_payment_no_access` важнее `tis_tariffs`, если есть возврат, оплата или проблема доступа после оплаты.",
+            ),
+            PromptBlock(
+                name="conflict_brand_list_definition",
+                required_intent_ids=frozenset({"brand_list_request"}),
+                section="conflicts",
+                text="- `brand_list_request` = перечислить бренды, марки, охват каталогов.",
+            ),
+            PromptBlock(
+                name="conflict_company_services_definition",
+                required_intent_ids=frozenset({"company_services_info"}),
+                section="conflicts",
+                text="- `company_services_info` = общая польза, функции, возможности, условия работы, преимущества и минусы сервиса.",
+            ),
+            PromptBlock(
+                name="conflict_purchase_ready_definition",
+                required_intent_ids=frozenset({"purchase_ready"}),
+                section="conflicts",
+                text="- `purchase_ready` = клиент готов купить или оформить.",
+            ),
+            PromptBlock(
+                name="conflict_legal_flow_definition",
+                required_intent_ids=frozenset({"legal_entity_purchase_flow"}),
+                section="conflicts",
+                text="- `legal_entity_purchase_flow` = клиент спрашивает, что нужно для оформления на ИП/юрлицо, куда отправить ИНН, реквизиты, договор, карточку предприятия.",
+            ),
+            PromptBlock(
+                name="conflict_free_catalog_definition",
+                required_intent_ids=frozenset({"free_catalog_comparison"}),
+                section="conflicts",
+                text="- `free_catalog_comparison` = сравнение с бесплатными каталогами или бесплатными решениями.",
+            ),
+            PromptBlock(
+                name="example_tis_brand_price",
+                required_intent_ids=frozenset({"tis_tariffs"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: есть ли каталог вольво
+бот: да, есть
+клиент: а сколько TIS на него
+
+Перефразированная последняя фраза клиента:
+а сколько TIS на него
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "tis_tariffs",
+    "score": 0.94,
+    "reason": "Клиент спрашивает стоимость TIS для конкретного бренда."
+  },
+  "intent_2": null
+}""",
+            ),
+            PromptBlock(
+                name="example_dual_pricing",
+                required_intent_ids=frozenset({"epc_tariffs", "tis_tariffs"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: сколько стоит подписка
+
+Перефразированная последняя фраза клиента:
+сколько стоит подписка
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "epc_tariffs",
+    "score": 0.95,
+    "reason": "Общий вопрос о стоимости подписки без уточнения бренда покрывает тарифы EPC."
+  },
+  "intent_2": {
+    "intent_id": "tis_tariffs",
+    "score": 0.89,
+    "reason": "Общий вопрос о стоимости подписки без уточнения бренда покрывает тарифы TIS."
+  }
+}""",
+            ),
+            PromptBlock(
+                name="example_brand_list_all",
+                required_intent_ids=frozenset({"brand_list_request"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: TIS
+бот: По TIS подскажите, пожалуйста, интересующие бренды. Я сразу посчитаю итоговую сумму.
+клиент: Все
+
+Перефразированная последняя фраза клиента:
+Все
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "brand_list_request",
+    "score": 0.92,
+    "reason": "Клиент коротко ответил на вопрос о брендах и хочет получить полный список."
+  },
+  "intent_2": null
+}""",
+            ),
+            PromptBlock(
+                name="example_brand_list_followup",
+                required_intent_ids=frozenset({"brand_list_request"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: какие каталоги у вас есть
+бот: Да, у нас есть каталоги по широкому списку брендов.
+клиент: а какие есть
+
+Перефразированная последняя фраза клиента:
+а какие есть
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "brand_list_request",
+    "score": 0.90,
+    "reason": "Клиент уточняет список брендов после ответа о каталогах."
+  },
+  "intent_2": null
+}""",
+            ),
+            PromptBlock(
+                name="example_refund",
+                required_intent_ids=frozenset({"post_payment_no_access"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: можно вернуть деньги если не подошло
+
+Перефразированная последняя фраза клиента:
+можно вернуть деньги если не подошло
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "post_payment_no_access",
+    "score": 0.94,
+    "reason": "Клиент спрашивает про возврат денег после оплаты, это post-payment кейс, а не вопрос о тарифах."
+  },
+  "intent_2": null
+}""",
+            ),
+            PromptBlock(
+                name="example_demo_only",
+                required_intent_ids=frozenset({"demo_access"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: сколько стоит EPC
+бот: рассказываю про цену EPC
+клиент: а демо есть?
+
+Перефразированная последняя фраза клиента:
+а демо есть?
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "demo_access",
+    "score": 0.92,
+    "reason": "Клиент в последней фразе спрашивает только про демо."
+  },
+  "intent_2": null
+}""",
+            ),
+            PromptBlock(
+                name="example_legal_status_yes",
+                required_intent_ids=frozenset({"legal_entity_purchase_flow"}),
+                section="examples",
+                text="""Пример:
+Диалог:
+клиент: хочу купить доступ
+бот: Мы работаем только с юридическими лицами. Вы юр. лицо?
+клиент: Да, являюсь
+
+Перефразированная последняя фраза клиента:
+Да, являюсь
+
+Ответ:
+{
+  "intent_1": {
+    "intent_id": "legal_entity_purchase_flow",
+    "score": 0.94,
+    "reason": "Клиент подтверждает, что является юрлицом или ИП в ответ на вопрос бота."
+  },
+  "intent_2": null
+}""",
+            ),
+        )
+
+
+===== the_First_Agent/prompting/topic_prompt_sections_builder.py =====
+from __future__ import annotations
+
+from the_First_Agent.prompting.topic_prompt_block_catalog import PromptBlock, TopicPromptBlockCatalog
+
+
+class TopicPromptSectionsBuilder:
+    def __init__(self, block_catalog: TopicPromptBlockCatalog | None = None) -> None:
+        self._block_catalog = block_catalog or TopicPromptBlockCatalog()
+
+    def build_rules_text(self, allowed_intent_ids: list[str] | set[str]) -> str:
+        selected_ids = set(allowed_intent_ids)
+        sections: list[str] = []
+
+        rules = self._render_section("rules", selected_ids)
+        if rules:
+            sections.append("Правила для текущего shortlist:\n" + "\n".join(rules))
+
+        priorities = self._render_section("priorities", selected_ids)
+        if priorities:
+            sections.append(
+                "Приоритеты для текущего shortlist:\n" +
+                "\n".join(f"{index}. {item}" for index, item in enumerate(priorities, start=1))
+            )
+
+        conflicts = self._render_section("conflicts", selected_ids)
+        if conflicts:
+            sections.append("Правила разведения близких intent-ов:\n" + "\n".join(conflicts))
+
+        return "\n\n".join(sections)
+
+    def build_examples_text(self, allowed_intent_ids: list[str] | set[str]) -> str:
+        selected_ids = set(allowed_intent_ids)
+        return "\n\n".join(self._render_section("examples", selected_ids))
+
+    def _render_section(self, section: str, selected_ids: set[str]) -> list[str]:
+        rendered: list[str] = []
+        for block in self._block_catalog.blocks():
+            if block.section != section:
+                continue
+            if not self._block_catalog.block_is_compatible(block, selected_ids):
+                continue
+            rendered.append(block.text)
+        return rendered
+
+
+===== the_First_Agent/prompts/__init__.py =====
+
+
+===== the_First_Agent/prompts/topic_classifier_prompt.txt =====
+Ты классификатор намерений клиента компании, которая продает каталоги автозапчастей.
+
+Главное правило:
+- Классифицируй только последнюю фразу клиента.
+- Историю используй только для восстановления смысла коротких фраз, местоимений и брендов.
+- Не добавляй intent из истории, если он не нужен для ответа на последнюю фразу клиента.
+
+Обязательные правила:
+1. Используй только `intent_id` из списка ниже.
+2. Не придумывай новые `intent_id`.
+3. Опирайся в первую очередь на `choose_when`, `not_choose_when` и примеры ниже.
+4. `nonsense_input` выбирай только для реального шума или бессмысленного ввода.
+5. `out_of_scope_request` выбирай только если запрос осмысленный, но не про продукт компании.
+
+Правило `intent_2`:
+- Заполняй `intent_2` только если в последней фразе клиента есть два самостоятельных запроса, для которых нужны два разных блока ответа.
+- Не добавляй `intent_2` только потому, что одна тема связана с другой.
+- Специальные исключения для отдельных intent-ов смотри в правилах текущего shortlist.
+
+{dynamic_rules_text}
+Разрешённые intent_id:
+{allowed_intents_text}
+
+Компактные описания intent-ов:
+{topics_text}
+
+{dynamic_examples_text}
+
+Диалог:
+{dialog_text}
+
+Перефразированная последняя фраза клиента:
+{user_query}
+
+Формат ответа:
+{
+  "intent_1": {
+    "intent_id": "один intent_id из списка выше",
+    "score": 0.0,
+    "reason": "коротко, почему выбрана эта тема"
+  },
+  "intent_2": null
+}
+
+Ограничения:
+- `intent_1` обязателен всегда.
+- `intent_2` либо `null`, либо объект такого же формата.
+- Если тем две, в `intent_1` ставь более важную тему для ответа на последнюю фразу клиента.
+- Поле `intent_id` можно заполнять только значением из блока `Разрешённые intent_id`.
+- Если `intent_id` не совпадает с одним из значений из блока `Разрешённые intent_id`, ответ считается неправильным.
+- Нельзя сокращать, переводить или переименовывать `intent_id`; копируй его посимвольно из разрешённого списка.
+- Шкала `score`:
+  - `0.90-1.00` почти полная уверенность
+  - `0.75-0.89` уверенный выбор
+  - `0.60-0.74` умеренная уверенность
+  - ниже `0.60` использовать только если тема все равно наиболее подходящая
+- Не используй поля `label`, `label_ru`, `intent`, `confidence`.
+- Не добавляй текст вне JSON.
+
+

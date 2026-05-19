@@ -1,0 +1,4 @@
+test_llm:
+  per_request_timeout_s: 35
+  max_retries: 2
+  retry_backoff_s: 1.0

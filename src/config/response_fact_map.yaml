@@ -1,0 +1,192 @@
+company_services:
+  default:
+    - company_services_general
+    - company_services_competitor_discount
+  limitations:
+    - company_services_cons
+  multi_device:
+    - multi_device_access_policy
+  multi_user:
+    - multi_user_access_policy
+  parts_selection:
+    - parts_selection_not_supported
+  usage_limits:
+    - usage_limits_no_restrictions
+
+company_services_documents:
+  default:
+    - company_services_documents
+    - company_documents_contact_followup
+
+ask_legal_status:
+  default:
+    - legal_only_policy
+
+request_requisites:
+  default:
+    - purchase_required_data
+
+manager_handoff_ready:
+  default:
+    - manager_handoff_after_requisites
+
+api_unavailable:
+  default:
+    - api_not_available
+
+api_then_purchase:
+  default:
+    - api_then_purchase_flow
+
+demo_policy:
+  default:
+    - demo_policy
+  confirmed_legal:
+    - demo_legal_followup
+
+physical_reject:
+  default:
+    - physical_reject
+
+physical_reject_reason:
+  default:
+    - physical_reject_reason
+
+macos_support:
+  default:
+    - macos_support
+
+epc_tariffs:
+  default:
+    - epc_price_general
+
+pricing_summary:
+  default:
+    - epc_price_general
+    - tis_price_general
+
+catalog_list_info:
+  default:
+    - catalog_list_products
+
+brand_list_info:
+  default:
+    - brand_list_overview
+
+self_employed_policy:
+  default:
+    - self_employed_policy
+
+existing_contract_check:
+  default:
+    - existing_contract_check_request_number
+
+subscription_renewal:
+  default:
+    - subscription_renewal_policy
+
+payment_process:
+  default:
+    - payment_process_policy
+
+competitor_comparison:
+  default:
+    - competitor_comparison_advantages
+
+human_operator:
+  default:
+    - human_operator_reply
+  abuse:
+    - human_operator_conflict_or_abuse
+
+human_operator_collect_phone:
+  default:
+    - human_operator_collect_phone
+
+human_operator_phone_invalid:
+  default:
+    - human_operator_phone_invalid
+
+human_operator_phone_confirm:
+  default:
+    - human_operator_phone_confirm
+
+partial_catalog_restriction:
+  default:
+    - partial_catalog_restriction
+
+brand_availability:
+  default:
+    - brand_availability_need_brand
+  specific:
+    - brand_availability_specific
+  need_brand:
+    - brand_availability_need_brand
+
+brand_group_clarification:
+  default:
+    - brand_group_clarification_need_specific_brand
+
+unknown_brand_unavailable:
+  default:
+    - unknown_brand_unavailable_catalogs
+
+compare_epc_tis:
+  default:
+    - product_relation_epc_tis_core
+  free_catalog:
+    - compare_epc_tis_core
+
+price_objection:
+  default:
+    - price_objection_vin_note
+    - competitor_choice_retention
+
+free_catalog_comparison:
+  default:
+    - free_catalog_comparison_policy
+    - free_catalogs_detailed_gap
+
+clarify_request:
+  default:
+    - clarify_request_service
+
+closing_ack:
+  default:
+    - closing_ack_service
+
+greeting_once:
+  default:
+    - greeting_once_service
+
+out_of_scope_response:
+  default:
+    - out_of_scope_service
+
+post_payment_no_access_handoff:
+  default:
+    - post_payment_no_access_handoff
+    - post_payment_refund_policy
+
+post_payment_access_info:
+  default:
+    - post_payment_access_timing
+
+usage_limits_info:
+  default:
+    - usage_limits_no_restrictions
+
+multi_device_access_info:
+  default:
+    - multi_device_access_policy
+    - multi_user_access_policy
+
+manager_setup_support_info:
+  default:
+    - manager_setup_support_info
+
+tis_tariffs:
+  default:
+    - tis_tariffs_brand_required
+  known_brand:
+    - tis_price_general

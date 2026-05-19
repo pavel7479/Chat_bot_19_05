@@ -1,0 +1,338 @@
+СХЕМА ВЗАИМОДЕЙСТВИЯ: КАК ФОРМИРУЕТСЯ ОТВЕТ НА ВОПРОС КЛИЕНТА
+
+0. Кто такие Первый и Второй агент
+
+- Agent Zero
+  Это внутренний смысловой слой.
+  Он отвечает только на вопрос:
+  "Что сейчас по смыслу имеет в виду пользователь?"
+
+- Первый агент
+  Это весь слой, который выбирает тему запроса.
+  В него входят:
+  - Agent Zero
+  - ContextSignals
+  - FollowupResolver
+  - TopicShortlistBuilder
+  - TopicClassifier
+  - SemanticCompatibilityValidator
+  - часть логики IntentAgent
+
+- Второй агент
+  Это слой, который строит уже сам ответ.
+  В него входят:
+  - ResponsePlanner
+  - KnowledgeRetriever
+  - AnswerComposer
+  - PriceProvider
+  - ResponseAgent
+  - AnswerSynthesisService
+  - ResponseModelFactory
+
+То есть коротко:
+- Первый агент решает: "О чём запрос и какой сценарий нужен"
+- Второй агент решает: "Что именно сказать клиенту"
+
+1. Общая цепочка в одну строку
+Клиент -> ChatBotOrchestrator -> SlotExtractionService -> ПЕРВЫЙ АГЕНТ -> ВТОРОЙ АГЕНТ -> StateUpdate/Telemetry -> Ответ клиенту
+
+В развёрнутом виде:
+Клиент -> ChatBotOrchestrator -> SlotExtractionService -> Agent Zero -> ProductResolver -> DialogActRouter/IntentAgent -> TopicClassifier -> SemanticCompatibilityValidator -> ResponsePlanner -> KnowledgeRetriever/AnswerComposer/PriceProvider -> ResponseAgent -> AnswerSynthesisService -> Greeting/StateUpdate/Telemetry -> Ответ клиенту
+
+2. Пошаговая схема
+
+[1] Клиент отправляет сообщение
+    |
+    v
+[2] ChatBotOrchestrator.respond(session_id, user_query)
+    Что делает:
+    - добавляет реплику клиента в историю
+    - достаёт SessionState
+    - формирует history_text
+    |
+    v
+[3] SlotExtractionService.extract(...)
+    Что делает:
+    - ищет бренды
+    - ищет ИНН, телефон, период, количество пользователей, способ оплаты
+    - формирует slot trace
+    |
+    v
+====================
+ПЕРВЫЙ АГЕНТ
+====================
+
+[4] Agent Zero / ContextUnderstandingAgent.understand(...)
+    Что делает:
+    - запрашивает у модели краткое понимание реплики
+    - возвращает:
+      - gist
+      - meaning
+      - turn_type
+      - semantic_flags
+      - semantic_frame
+    - если ответ модели кривой, parser делает fallback
+    |
+    v
+[5] ProductResolver.resolve(...)
+    Что делает:
+    - понимает продуктовый контекст
+    - определяет:
+      - EPC/TIS angle
+      - pricing/availability/comparison
+      - бренды
+      - unknown бренды
+      - product-specific hints
+    |
+    v
+[6] DialogActRouter.route(...)
+    Что делает:
+    - проверяет, не подходит ли жёсткий сценарий
+    Примеры:
+    - greeting
+    - nonsense
+    - часть protocol/system routes
+
+    Дальше два пути:
+
+    6A. Если router сработал:
+        -> IntentAgent.build_from_dialog_act(...)
+
+    6B. Если router не сработал:
+        -> IntentAgent.classify(...)
+
+3. Обычная classifier-ветка первого агента
+
+[7] IntentAgent.classify(...)
+    Что делает:
+    - берёт semantic_frame от Agent Zero
+    - строит ContextSignals
+    - считает FollowupResolver
+    - строит shortlist тем
+    - собирает prompt для TopicClassifier
+    |
+    v
+[8] TopicClassifier.classify(...)
+    Что делает:
+    - вызывает модель на shortlist тем
+    - получает topic_ids, confidence, reason
+    - формирует state_snapshot и diagnostics
+    |
+    v
+[9] SemanticCompatibilityValidator.validate(...)
+    Что делает:
+    - проверяет, не противоречит ли topic смыслу из SemanticFrame
+    Варианты:
+    - совместимо -> оставляем как есть
+    - конфликт, но есть подходящая тема в shortlist -> topic override
+    - конфликт и нет подходящей темы -> safe fallback topic
+    |
+    v
+[10] IntentAgent._apply_context_understanding_state(...)
+    Что делает:
+    - пишет в state_snapshot:
+      - last_context_gist
+      - last_context_meaning
+      - conversation_mode
+      - user_goal
+      - last_semantic_frame
+    - пишет всё это же в diagnostics
+
+4. DialogActRouter-ветка первого агента
+
+[7R] IntentAgent.build_from_dialog_act(...)
+    Что делает:
+    - не запускает classifier заново
+    - берёт topic/action из решения router-а
+    - всё равно пишет semantic_frame, followup_trace и state traces в diagnostics
+    - semantic compatibility отмечает как skipped
+
+====================
+ВТОРОЙ АГЕНТ
+====================
+
+5. После первого агента начинается второй агент
+
+[11] ResponseAgent.plan(...)
+    Внутри: ResponsePlanner.plan(...)
+    Что делает:
+    - превращает topic result в конкретный план ответа
+    - выбирает:
+      - primary_action
+      - primary_topic
+      - secondary_topic
+      - required_fact_ids
+      - required_price_blocks
+      - locked_action
+    |
+    v
+[12] KnowledgeRetriever.enrich(...)
+    Что делает:
+    - достаёт факты из facts.yaml / retrieval слоя
+    |
+    v
+[13] TurnBrandAliasResolver.enrich(...)
+    Что делает:
+    - обогащает результат информацией о брендах
+    |
+    v
+[14] AnswerComposer.enrich(...)
+    Что делает:
+    - собирает answer_block
+    - подготавливает prepared_context и structured_context
+    - вызывает PriceProvider и pricing-flow слои, если нужен ценовой ответ
+
+6. Pricing часть внутри второго агента, если вопрос связан с ценой
+
+[15] PriceProvider.build_for_pricing_flow(...)
+    Что делает:
+    - строит PriceContext
+    - собирает:
+      - recognized brands
+      - unknown brands
+      - missing price brands
+      - priced brands
+      - EPC fallback
+
+[16] PricingFlowStateService
+    Что делает:
+    - ведёт состояние pricing-flow
+    - обновляет pending/processed/remaining логику
+    - применяет изменения после классификации и после ответа
+
+7. Генерация финального ответа во втором агенте
+
+[17] ResponseAgent.generate(...)
+    Что делает:
+    - получает response plan
+    - получает answer_block
+    - передаёт всё в генератор ответа
+    |
+    v
+[18] AnswerSynthesisService.build_answer(...)
+    Что делает:
+    - строит answer prompt
+    - собирает deterministic answer
+    - при необходимости вызывает LLM
+    - проверяет:
+      - action compatibility
+      - mandatory meaning
+      - anti-repeat / policy
+    - выбирает источник финального ответа:
+      - llm
+      - deterministic
+      - fallback
+      - safe_default
+    - пишет answer_selection_trace
+    |
+    v
+[19] ResponseModelFactory.build(...)
+    Что делает:
+    - собирает финальный BotResponse
+    - прикладывает action_name, topic_ids, evidence ids и другие поля
+
+8. Пост-обработка и обновление state
+
+[20] GreetingService.apply(...)
+    Что делает:
+    - при необходимости добавляет/нормализует приветствие
+    |
+    v
+[21] StateUpdateService.apply_after_classification(...)
+    Что делает:
+    - обновляет state после первого агента
+    - применяет state_snapshot
+    - обновляет generic dialog state
+    - вызывает PricingFlowStateService для pricing-domain части
+    |
+    v
+[22] StateUpdateService.apply_after_response(...)
+    Что делает:
+    - обновляет state после уже готового ответа
+    - сохраняет last action, semantic memory, repeats и pricing response effects
+    |
+    v
+[23] SessionManager.set_state(...)
+    Что делает:
+    - сохраняет новое состояние сессии
+
+9. Логирование и debug
+
+[24] TelemetryService
+    Что пишет:
+    - topic request/response
+    - agent_zero_trace
+    - classifier routing
+    - state trace
+    - answer_selection_trace
+    - turn_summary
+    - failure_event
+
+[25] ChatBotOrchestrator сохраняет _last_turn_debug
+    Что можно потом увидеть:
+    - topic_result_diagnostics
+    - state_before
+    - state_after_classification
+    - state_after_response
+    - response_plan
+    - answer_block
+    - retrieval_trace
+    - answer_prompt
+    - raw_answer
+    - response
+
+10. Что в итоге уходит клиенту
+
+[26] BotResponse
+    Клиент получает:
+    - answer_text
+    - topic_ids
+    - action_name
+    - planned_action
+    - media refs, если есть
+
+11. Короткая визуальная схема
+
+Клиент
+  -> ChatBotOrchestrator
+    -> SessionManager / history
+    -> SlotExtractionService
+    -> ПЕРВЫЙ АГЕНТ
+       -> Agent Zero
+       -> ProductResolver
+       -> DialogActRouter ?
+          -> да: build_from_dialog_act
+          -> нет: IntentAgent.classify
+               -> ContextSignals
+               -> FollowupResolver
+               -> TopicShortlistBuilder
+               -> TopicClassifier
+               -> SemanticCompatibilityValidator
+    -> ВТОРОЙ АГЕНТ
+       -> ResponsePlanner
+       -> KnowledgeRetriever
+       -> TurnBrandAliasResolver
+       -> AnswerComposer
+          -> PriceProvider
+          -> PricingFlowStateService
+       -> ResponseAgent.generate
+          -> AnswerSynthesisService
+          -> ResponseModelFactory
+    -> GreetingService
+    -> StateUpdateService
+    -> TelemetryService
+  -> BotResponse
+  -> Клиент
+
+12. Самое важное по ролям
+- Agent Zero
+  Понимает смысл текущей реплики.
+
+- Первый агент
+  Решает, к какой теме и какому сценарию относится запрос.
+
+- Второй агент
+  Решает, какой именно ответ текстом показать клиенту.
+
+- ChatBotOrchestrator
+  Склеивает всё это в один pipeline.

@@ -1,0 +1,2948 @@
+===== src/app/chatbot.py =====
+from __future__ import annotations
+
+from time import perf_counter
+from pathlib import Path
+from uuid import uuid4
+
+from src.agents.intent_agent import IntentAgent
+from src.agents.response_agent import ResponseAgent
+from src.app.answer_composer import AnswerComposer
+from src.app.brand_alias_resolver import TurnBrandAliasResolver
+from src.app.knowledge_retriever import KnowledgeRetriever
+from src.app.state_update_service import StateUpdateService
+from src.app.telemetry_service import TelemetryService
+from src.config.schema import Config
+from src.core.diff_utils import snapshot
+from src.core.models import BotResponse, RetrievedChunk, SessionState
+from src.session.session_manager import SessionManager
+from the_First_Agent.context.history_formatter import format_history
+
+
+class ChatBotOrchestrator:
+    def __init__(
+        self,
+        config: Config,
+        project_root: Path,
+        intent_agent: IntentAgent,
+        response_agent: ResponseAgent,
+        knowledge_retriever: KnowledgeRetriever | None,
+        brand_alias_resolver: TurnBrandAliasResolver | None,
+        answer_composer: AnswerComposer | None,
+        session_manager: SessionManager,
+        logger,
+        state_update_service: StateUpdateService | None = None,
+        telemetry_service: TelemetryService | None = None,
+    ) -> None:
+        self._config = config
+        self._project_root = project_root
+        self._intent_agent = intent_agent
+        self._response_agent = response_agent
+        self._knowledge_retriever = knowledge_retriever
+        self._brand_alias_resolver = brand_alias_resolver
+        self._answer_composer = answer_composer
+        self._session = session_manager
+        self._logger = logger
+        self._state_update = state_update_service or StateUpdateService()
+        self._telemetry = telemetry_service or TelemetryService(logger)
+
+    def respond(self, session_id: str, user_query: str) -> BotResponse:
+        total_started = perf_counter()
+        run_id = uuid4().hex
+        self._session.add_user_message(session_id, user_query)
+        history = self._session.get_history(session_id)
+        turn_id = len([msg for msg in history if msg.role == "user"])
+        session_state = self._session.get_state(session_id)
+        history_text = format_history(history)
+
+        classify_started = perf_counter()
+        self._telemetry.topic_request(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            user_query=user_query,
+            session_state=session_state.as_dict(),
+        )
+        topic_prompt, topic_result = self._intent_agent.classify(
+            history_text=history_text,
+            user_query=user_query,
+            session_state=session_state,
+        )
+        classify_ms = round((perf_counter() - classify_started) * 1000, 2)
+        self._telemetry.topic_response(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_prompt=topic_prompt,
+            topic_result=topic_result,
+            classify_ms=classify_ms,
+        )
+        self._telemetry.classifier_routing(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_result=topic_result,
+        )
+        self._telemetry.classifier_state_trace(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_result=topic_result,
+        )
+        self._telemetry.classifier_quality(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_result=topic_result,
+        )
+        if self._knowledge_retriever is not None:
+            before_knowledge = self._extract_first_agent_block(topic_result, "knowledge")
+            self._knowledge_retriever.enrich(
+                topic_result=topic_result,
+                user_query=user_query,
+                history_text=history_text,
+            )
+            self._telemetry.first_agent_data_diff(
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                actor="KnowledgeRetriever",
+                step="knowledge_retriever",
+                target="first_agent_data.knowledge",
+                before_data=before_knowledge,
+                after_data=self._extract_first_agent_block(topic_result, "knowledge"),
+            )
+        if self._brand_alias_resolver is not None:
+            before_brands = self._extract_first_agent_block(topic_result, "brands")
+            self._brand_alias_resolver.enrich(
+                topic_result=topic_result,
+                user_query=user_query,
+            )
+            self._telemetry.first_agent_data_diff(
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                actor="TurnBrandAliasResolver",
+                step="brand_alias_resolver",
+                target="first_agent_data.brands",
+                before_data=before_brands,
+                after_data=self._extract_first_agent_block(topic_result, "brands"),
+            )
+        if self._answer_composer is not None:
+            before_answer = self._extract_first_agent_block(topic_result, "answer")
+            self._answer_composer.enrich(
+                topic_result=topic_result,
+                user_query=user_query,
+                history_text=history_text,
+            )
+            self._telemetry.first_agent_data_diff(
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                actor="AnswerComposer",
+                step="answer_composer",
+                target="first_agent_data.answer",
+                before_data=before_answer,
+                after_data=self._extract_first_agent_block(topic_result, "answer"),
+            )
+        self._telemetry.first_agent_data_snapshot(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_result=topic_result,
+        )
+        classification_state_before = session_state.as_dict()
+        current_state = self._state_update.apply_after_classification(
+            base_state=session_state,
+            topic_result=topic_result,
+        )
+        self._telemetry.state_transition(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            actor="StateUpdateService",
+            step="apply_after_classification",
+            before_state=classification_state_before,
+            after_state=current_state.as_dict(),
+        )
+        self._session.set_state(session_id, state=current_state)
+
+        retrieval_started = perf_counter()
+        chunks, retrieved_context, retrieval_trace = self._build_knowledge_retrieval_payload(
+            user_query=user_query,
+            topic_result=topic_result,
+        )
+        retrieval_ms = round((perf_counter() - retrieval_started) * 1000, 2)
+
+        self._telemetry.retrieval_response(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_ids=topic_result.topic_ids,
+            retrieval_ms=retrieval_ms,
+            retrieval_trace=retrieval_trace,
+            chunks=chunks,
+        )
+        topic_result.retrieval_context = dict(retrieval_trace)
+        self._telemetry.pipeline_trace(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            retrieval_trace=retrieval_trace,
+        )
+
+        generate_started = perf_counter()
+        self._telemetry.answer_request(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            topic_ids=topic_result.topic_ids,
+            history_text=history_text,
+            retrieved_context=retrieved_context,
+            chunk_count=len(chunks),
+        )
+        answer_prompt, raw_answer, response = self._response_agent.generate(
+            history_text=history_text,
+            user_query=user_query,
+            topic_result=topic_result,
+            chunks=chunks,
+            retrieved_context=retrieved_context,
+        )
+        generate_ms = round((perf_counter() - generate_started) * 1000, 2)
+        self._telemetry.answer_response(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            answer_prompt=answer_prompt,
+            raw_answer=raw_answer,
+            generate_ms=generate_ms,
+        )
+
+        self._session.add_bot_message(session_id, response.answer_text)
+        response_state_before = current_state.as_dict()
+        current_state = self._state_update.apply_after_response(
+            state_before_response=current_state,
+            previous_state=session_state,
+            response=response,
+        )
+        self._telemetry.state_transition(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            actor="StateUpdateService",
+            step="apply_after_response",
+            before_state=response_state_before,
+            after_state=current_state.as_dict(),
+        )
+        self._session.set_state(session_id, state=current_state)
+        total_ms = round((perf_counter() - total_started) * 1000, 2)
+
+        self._telemetry.request_telemetry(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            classify_ms=classify_ms,
+            retrieval_ms=retrieval_ms,
+            generate_ms=generate_ms,
+            total_ms=total_ms,
+        )
+
+        self._telemetry.final_decision(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            response=response,
+            classify_ms=classify_ms,
+            retrieval_ms=retrieval_ms,
+            generate_ms=generate_ms,
+            total_ms=total_ms,
+        )
+
+        return response
+
+    def clear_session(self, session_id: str) -> None:
+        self._session.clear(session_id)
+
+    @staticmethod
+    def _build_knowledge_retrieval_payload(
+        user_query: str,
+        topic_result,
+    ) -> tuple[list[RetrievedChunk], str, dict[str, object]]:
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            first_agent_data = {}
+        knowledge = first_agent_data.get("knowledge", {})
+        answer_block = first_agent_data.get("answer", {})
+        if not isinstance(knowledge, dict):
+            knowledge = {}
+        if not isinstance(answer_block, dict):
+            answer_block = {}
+
+        retrieved_facts = knowledge.get("retrieved_facts", [])
+        if not isinstance(retrieved_facts, list):
+            retrieved_facts = []
+        pricing = knowledge.get("pricing", {})
+        if not isinstance(pricing, dict):
+            pricing = {}
+        prepared_context = str(answer_block.get("prepared_context", "")).strip()
+
+        chunks: list[RetrievedChunk] = []
+        merged_candidates: list[dict[str, object]] = []
+        for fact in retrieved_facts:
+            if not isinstance(fact, dict):
+                continue
+            text = str(fact.get("text", "")).strip()
+            if not text:
+                continue
+            entry_index = str(fact.get("fact_id", "")).strip()
+            section_tag = str(fact.get("section_tag", "general")).strip() or "general"
+            priority_raw = fact.get("priority", 0)
+            try:
+                score = float(priority_raw)
+            except (TypeError, ValueError):
+                score = 0.0
+            chunk = RetrievedChunk(
+                text=text,
+                score=score,
+                source="facts.yaml",
+                metadata={
+                    "entry_index": entry_index,
+                    "fact_id": entry_index,
+                    "search_kind": "knowledge_context",
+                    "section_tag": section_tag,
+                    "why_selected": f"topic_match={fact.get('topic', '')}",
+                    "bm25_score": 0.0,
+                    "dense_score": 0.0,
+                },
+            )
+            chunks.append(chunk)
+            merged_candidates.append(
+                {
+                    "score": round(score, 4),
+                    "source": "facts.yaml",
+                    "entry_index": entry_index,
+                    "fact_id": entry_index,
+                    "search_kind": "knowledge_context",
+                    "section_tag": section_tag,
+                }
+            )
+
+        epc_block = pricing.get("epc", {})
+        if isinstance(epc_block, dict):
+            periods = epc_block.get("periods", {})
+            if isinstance(periods, dict):
+                order = [
+                    ("1_month", "1 месяц"),
+                    ("3_months", "3 месяца"),
+                    ("6_months", "6 месяцев"),
+                    ("12_months", "12 месяцев"),
+                ]
+                price_parts: list[str] = []
+                for key, label in order:
+                    value = periods.get(key)
+                    try:
+                        amount = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    price_parts.append(f"{label} — {amount} руб")
+                if price_parts:
+                    text = "Тариф EPC Full: " + ", ".join(price_parts) + "."
+                    chunk = RetrievedChunk(
+                        text=text,
+                        score=10.0,
+                        source="prices.yaml",
+                        metadata={
+                            "entry_index": "epc_prices",
+                            "fact_id": "epc_prices",
+                            "search_kind": "knowledge_context",
+                            "section_tag": "pricing",
+                            "why_selected": "topic_match=epc_tariffs",
+                            "bm25_score": 0.0,
+                            "dense_score": 0.0,
+                        },
+                    )
+                    chunks.append(chunk)
+                    merged_candidates.append(
+                        {
+                            "score": 10.0,
+                            "source": "prices.yaml",
+                            "entry_index": "epc_prices",
+                            "fact_id": "epc_prices",
+                            "search_kind": "knowledge_context",
+                            "section_tag": "pricing",
+                        }
+                    )
+
+        reranked_topk = [
+            {
+                "score": round(chunk.score, 4),
+                "source": chunk.source,
+                "entry_index": chunk.metadata.get("entry_index", ""),
+                "fact_id": chunk.metadata.get("fact_id", ""),
+                "why_selected": str(chunk.metadata.get("why_selected", "")),
+                "section_tag": chunk.metadata.get("section_tag", "general"),
+            }
+            for chunk in chunks
+        ]
+
+        retrieval_trace = {
+            "trace_id": uuid4().hex,
+            "query_received": {
+                "query": user_query,
+                "topic_ids": list(topic_result.topic_ids),
+                "planned_action": topic_result.planned_action,
+                "current_focus": topic_result.current_focus,
+                "slots": dict(topic_result.state_snapshot.get("slots", {}))
+                if isinstance(topic_result.state_snapshot, dict)
+                and isinstance(topic_result.state_snapshot.get("slots", {}), dict)
+                else {},
+            },
+            "query_extended": {
+                "variants": [user_query],
+            },
+            "bm25_hits": [],
+            "dense_hits": [],
+            "merged_candidates": merged_candidates,
+            "reranked_topk": reranked_topk,
+            "dropped_candidates": [],
+        }
+        return chunks, prepared_context, retrieval_trace
+
+    @staticmethod
+    def _extract_first_agent_block(topic_result, block_name: str) -> object:
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            return {}
+        return snapshot(first_agent_data.get(block_name, {}))
+
+
+===== src/app/knowledge_retriever.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from src.core.diff_utils import dict_diff, snapshot
+from src.core.models import FactRecord, TopicClassificationResult
+from src.domain.pricing import PriceCatalog
+from src.retrieval.fact_repository import FactRepository
+
+
+@dataclass(slots=True)
+class KnowledgeRetriever:
+    """Intent/topic-based fact extraction from facts.yaml (no model calls)."""
+
+    fact_repository: FactRepository
+    price_catalog: PriceCatalog | None = None
+    max_facts_per_turn: int = 8
+
+    def enrich(
+        self,
+        topic_result: TopicClassificationResult,
+        user_query: str,
+        history_text: str,
+    ) -> None:
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            first_agent_data = {}
+        diagnostics["first_agent_data"] = first_agent_data
+        trace = diagnostics.get("first_agent_trace", {})
+        if not isinstance(trace, dict):
+            trace = {}
+        diagnostics["first_agent_trace"] = trace
+        pipeline_steps = trace.get("pipeline_steps", [])
+        if not isinstance(pipeline_steps, list):
+            pipeline_steps = []
+            trace["pipeline_steps"] = pipeline_steps
+
+        facts = self._select_facts(
+            topic_ids=list(topic_result.topic_ids),
+            user_query=user_query,
+            history_text=history_text,
+        )
+        retrieved_facts = [
+            {
+                "fact_id": fact.fact_id,
+                "topic": fact.topic,
+                "subtopic": fact.subtopic,
+                "section_tag": fact.section_tag,
+                "priority": fact.priority,
+                "text": fact.text,
+            }
+            for fact in facts
+        ]
+        retrieval_reason = [
+            f"{fact.fact_id}:topic={fact.topic};action_tags={','.join(fact.action_tags) if fact.action_tags else '-'}"
+            for fact in facts
+        ]
+        pricing = self._select_pricing(topic_ids=list(topic_result.topic_ids))
+        before_knowledge = snapshot(first_agent_data.get("knowledge", {}))
+
+        first_agent_data["knowledge"] = {
+            "selected_topics": list(topic_result.topic_ids),
+            "retrieved_facts": retrieved_facts,
+            "retrieval_reason": retrieval_reason,
+            "pricing": pricing,
+        }
+        after_knowledge = snapshot(first_agent_data["knowledge"])
+        pipeline_steps.append(
+            {
+                "step": "knowledge_retriever",
+                "actor": "KnowledgeRetriever",
+                "target": "first_agent_data.knowledge",
+                "status": "ok",
+                "before": before_knowledge,
+                "after": after_knowledge,
+                "diff": dict_diff(before_knowledge, after_knowledge),
+            }
+        )
+        topic_result.diagnostics = diagnostics
+
+    def _select_facts(
+        self,
+        topic_ids: list[str],
+        user_query: str,
+        history_text: str,
+    ) -> list[FactRecord]:
+        all_facts = self.fact_repository.list_facts()
+        if not all_facts:
+            return []
+
+        ordered_topics = [topic for topic in topic_ids if topic]
+        topic_order = {topic: idx for idx, topic in enumerate(ordered_topics)}
+        topic_set = set(ordered_topics)
+        scored: list[tuple[int, int, FactRecord]] = []
+        for fact in all_facts:
+            if fact.fact_type != "knowledge":
+                continue
+            if fact.topic not in topic_set:
+                continue
+            score = int(fact.priority)
+            if fact.subtopic and fact.subtopic in topic_set:
+                score += 3
+            scored.append((topic_order.get(fact.topic, 999), -score, fact))
+
+        scored.sort(key=lambda item: (item[0], item[1], item[2].fact_id))
+        selected: list[FactRecord] = []
+        seen_fact_ids: set[str] = set()
+        for _, _, fact in scored:
+            if fact.fact_id in seen_fact_ids:
+                continue
+            selected.append(fact)
+            seen_fact_ids.add(fact.fact_id)
+            if len(selected) >= self.max_facts_per_turn:
+                break
+        return selected
+
+    def _select_pricing(self, topic_ids: list[str]) -> dict[str, object]:
+        if self.price_catalog is None:
+            return {}
+
+        pricing: dict[str, object] = {}
+        topic_set = {topic for topic in topic_ids if topic}
+
+        if "epc_tariffs" in topic_set:
+            epc_prices = self.price_catalog.epc_prices()
+            if epc_prices:
+                pricing["epc"] = {
+                    "source": "prices.yaml",
+                    "periods": epc_prices,
+                }
+
+        if "tis_tariffs" in topic_set:
+            pricing["tis"] = {
+                "source": "prices.yaml",
+                "brand_required": True,
+            }
+
+        return pricing
+
+
+===== src/app/answer_composer.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from src.core.diff_utils import dict_diff, snapshot
+from src.core.models import TopicClassificationResult
+from src.domain.pricing import PriceCatalog
+
+
+@dataclass(slots=True)
+class AnswerComposer:
+    """Prepare deterministic answer context from first-agent data only."""
+
+    price_catalog: PriceCatalog | None = None
+    max_facts_in_context: int = 5
+
+    def enrich(
+        self,
+        topic_result: TopicClassificationResult,
+        user_query: str,
+        history_text: str,
+    ) -> None:
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            first_agent_data = {}
+        diagnostics["first_agent_data"] = first_agent_data
+
+        knowledge = first_agent_data.get("knowledge", {})
+        brands = first_agent_data.get("brands", {})
+        answer_block = first_agent_data.get("answer", {})
+        trace = diagnostics.get("first_agent_trace", {})
+
+        if not isinstance(knowledge, dict):
+            knowledge = {}
+        if not isinstance(brands, dict):
+            brands = {}
+        if not isinstance(answer_block, dict):
+            answer_block = {}
+        if not isinstance(trace, dict):
+            trace = {}
+        diagnostics["first_agent_trace"] = trace
+        pipeline_steps = trace.get("pipeline_steps", [])
+        if not isinstance(pipeline_steps, list):
+            pipeline_steps = []
+            trace["pipeline_steps"] = pipeline_steps
+
+        retrieved_facts = knowledge.get("retrieved_facts", [])
+        if not isinstance(retrieved_facts, list):
+            retrieved_facts = []
+        pricing = knowledge.get("pricing", {})
+        if not isinstance(pricing, dict):
+            pricing = {}
+        normalized_brands = brands.get("normalized", [])
+        if not isinstance(normalized_brands, list):
+            normalized_brands = []
+        selected_topics = [
+            str(topic_id).strip()
+            for topic_id in topic_result.topic_ids
+            if str(topic_id).strip()
+        ]
+        pricing_topics = self._pricing_topics(selected_topics)
+
+        fact_texts: list[str] = []
+        used_fact_ids: list[str] = []
+        evidence_items: list[dict[str, object]] = []
+        for fact in retrieved_facts:
+            if not isinstance(fact, dict):
+                continue
+            text = str(fact.get("text", "")).strip()
+            fact_id = str(fact.get("fact_id", "")).strip()
+            if not text:
+                continue
+            fact_texts.append(text)
+            if fact_id:
+                used_fact_ids.append(fact_id)
+                evidence_items.append(
+                    {
+                        "evidence_id": fact_id,
+                        "text": text,
+                        "score": float(fact.get("priority", 0) or 0.0),
+                        "source": "facts.yaml",
+                        "section_tag": str(fact.get("section_tag", "general")).strip() or "general",
+                    }
+                )
+            if len(fact_texts) >= self.max_facts_in_context:
+                break
+
+        prepared_context_parts: list[str] = []
+        if normalized_brands:
+            prepared_context_parts.append("Нормализованные бренды: " + ", ".join(str(x) for x in normalized_brands))
+        pricing_text = self._build_pricing_text(
+            pricing=pricing,
+            normalized_brands=normalized_brands,
+            pricing_topics=pricing_topics,
+        )
+        pricing_evidence_items = self._build_pricing_evidence_items(
+            pricing=pricing,
+            normalized_brands=normalized_brands,
+            pricing_topics=pricing_topics,
+        )
+        if pricing_text:
+            prepared_context_parts.append(pricing_text)
+        evidence_items.extend(pricing_evidence_items)
+        if fact_texts:
+            prepared_context_parts.append("\n".join(fact_texts))
+        prepared_context = "\n\n".join(prepared_context_parts).strip()
+
+        before_answer = snapshot(answer_block)
+        answer_block["prepared_context"] = prepared_context
+        answer_block["used_fact_ids"] = used_fact_ids
+        answer_block["used_evidence_ids"] = [
+            str(item.get("evidence_id", "")).strip()
+            for item in evidence_items
+            if str(item.get("evidence_id", "")).strip()
+        ]
+        answer_block["evidence_items"] = evidence_items
+        first_agent_data["answer"] = answer_block
+        after_answer = snapshot(first_agent_data["answer"])
+
+        pipeline_steps.append(
+            {
+                "step": "answer_composer",
+                "actor": "AnswerComposer",
+                "target": "first_agent_data.answer",
+                "status": "ok",
+                "before": before_answer,
+                "after": after_answer,
+                "diff": dict_diff(before_answer, after_answer),
+            }
+        )
+        topic_result.diagnostics = diagnostics
+
+    def _build_pricing_text(
+        self,
+        pricing: dict[str, object],
+        normalized_brands: list[object],
+        pricing_topics: set[str],
+    ) -> str:
+        parts: list[str] = []
+
+        epc_block = pricing.get("epc", {})
+        if "epc_tariffs" in pricing_topics and isinstance(epc_block, dict):
+            periods = epc_block.get("periods", {})
+            epc_text = self._format_epc_prices(periods)
+            if epc_text:
+                parts.append(epc_text)
+
+        tis_block = pricing.get("tis", {})
+        if "tis_tariffs" in pricing_topics and isinstance(tis_block, dict):
+            tis_lines = self._format_tis_prices(normalized_brands)
+            if tis_lines:
+                parts.append("\n".join(tis_lines))
+            elif bool(tis_block.get("brand_required", False)):
+                parts.append("Для расчета стоимости TIS нужна конкретная марка. Напишите интересующие бренды, и я сразу покажу цену.")
+
+        return "\n\n".join(part for part in parts if str(part).strip())
+
+    @staticmethod
+    def _format_epc_prices(periods: object) -> str:
+        if not isinstance(periods, dict):
+            return ""
+        order = [
+            ("1_month", "1 месяц"),
+            ("3_months", "3 месяца"),
+            ("6_months", "6 месяцев"),
+            ("12_months", "12 месяцев"),
+        ]
+        items: list[str] = []
+        for key, label in order:
+            value = periods.get(key)
+            try:
+                amount = int(value)
+            except (TypeError, ValueError):
+                continue
+            items.append(f"{label} — {amount} руб")
+        if not items:
+            return ""
+        return "Тариф EPC Full: " + ", ".join(items) + "."
+
+    def _format_tis_prices(self, normalized_brands: list[object]) -> list[str]:
+        if self.price_catalog is None:
+            return []
+        lines: list[str] = []
+        seen: set[str] = set()
+        for item in normalized_brands:
+            brand = str(item).strip().lower()
+            if not brand or brand in seen:
+                continue
+            seen.add(brand)
+            if not self.price_catalog.has_tis_price(brand):
+                continue
+            display_name = self.price_catalog.display_name(brand)
+            amount = self.price_catalog.tis_price_for(brand)
+            lines.append(f"TIS для {display_name} — {amount} руб.")
+        return lines
+
+    def _build_pricing_evidence_items(
+        self,
+        pricing: dict[str, object],
+        normalized_brands: list[object],
+        pricing_topics: set[str],
+    ) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+
+        epc_block = pricing.get("epc", {})
+        if "epc_tariffs" in pricing_topics and isinstance(epc_block, dict):
+            periods = epc_block.get("periods", {})
+            epc_text = self._format_epc_prices(periods)
+            if epc_text:
+                items.append(
+                    {
+                        "evidence_id": "epc_prices",
+                        "text": epc_text,
+                        "score": 10.0,
+                        "source": "prices.yaml",
+                        "section_tag": "pricing",
+                    }
+                )
+
+        if self.price_catalog is None:
+            return items
+
+        tis_block = pricing.get("tis", {})
+        if "tis_tariffs" not in pricing_topics or not isinstance(tis_block, dict):
+            return items
+        seen: set[str] = set()
+        for item in normalized_brands:
+            brand = str(item).strip().lower()
+            if not brand or brand in seen:
+                continue
+            seen.add(brand)
+            if not self.price_catalog.has_tis_price(brand):
+                continue
+            display_name = self.price_catalog.display_name(brand)
+            amount = self.price_catalog.tis_price_for(brand)
+            items.append(
+                {
+                    "evidence_id": f"tis_price:{brand}",
+                    "text": f"TIS для {display_name} — {amount} руб.",
+                    "score": 10.0,
+                    "source": "prices.yaml",
+                    "section_tag": "pricing",
+                }
+            )
+        return items
+
+    @staticmethod
+    def _pricing_topics(selected_topics: list[str]) -> set[str]:
+        return {topic for topic in selected_topics if topic in {"epc_tariffs", "tis_tariffs"}}
+
+
+===== src/agents/response_agent.py =====
+from __future__ import annotations
+
+from pathlib import Path
+
+from src.agents.policy.types import ResponseState
+from src.agents.policy.types import ResponseAction
+from src.agents.policy.anti_repeat_service import AntiRepeatService
+from src.agents.policy.contract_validation_service import ContractValidationService
+from src.domain.pricing import PriceCatalog
+from src.agents.response_services.pipeline_services import (
+    AnswerSynthesisService,
+    GroundedAnswerComposer,
+    ResponseModelFactory,
+)
+from src.core.interfaces import LLMProvider
+from src.core.models import (
+    BotResponse,
+    RetrievedChunk,
+    TopicClassificationResult,
+)
+from src.prompting.prompt_manager import PromptManager
+
+
+class ResponseAgent:
+    """Second agent (part 2): generate final manager-style answer from retrieved KB context."""
+
+    _TOPIC_TO_ACTION = {
+        "epc_tariffs": "epc_tariffs",
+        "tis_tariffs": "tis_tariffs",
+        "specific_brand_check": "brand_availability",
+        "brand_list_request": "brand_availability",
+        "company_services_info": "company_services",
+        "demo_access": "demo_policy",
+        "purchase_ready": "ask_legal_status",
+        "legal_entity_purchase_flow": "request_requisites",
+        "payment_without_details": "request_requisites",
+        "api_integration": "api_unavailable",
+        "human_operator_request": "human_operator",
+        "physical_person_purchase": "physical_reject",
+        "no_private_sales_reason": "physical_reject_reason",
+        "price_objection": "price_objection",
+        "competitor_choice": "price_objection",
+        "partial_catalog_request": "partial_catalog_restriction",
+        "free_catalog_comparison": "free_catalog_comparison",
+        "product_relation_or_difference": "compare_epc_tis",
+        "macos_support": "macos_support",
+        "post_payment_access_timing": "post_payment_access_info",
+        "post_payment_no_access": "post_payment_no_access_handoff",
+        "usage_limits": "usage_limits_info",
+        "multi_device_access": "multi_device_access_info",
+        "manager_setup_support": "manager_setup_support_info",
+        "nonsense_input": "clarify_request",
+        "out_of_scope_request": "out_of_scope_response",
+    }
+
+    def __init__(
+        self,
+        llm_provider: LLMProvider,
+        prompt_manager: PromptManager,
+        brands_file_path: Path,
+        facts_file_path: Path,
+        response_policy_file_path: Path,
+        prices_file_path: Path,
+        price_catalog: PriceCatalog | None = None,
+        min_evidence_score: float = 0.15,
+        min_evidence_hits: int = 1,
+    ) -> None:
+        self._llm = llm_provider
+        self._prompt_manager = prompt_manager
+        self._price_catalog = price_catalog or PriceCatalog(prices_file_path)
+        self._anti_repeat_policy = AntiRepeatService(response_policy_file_path)
+        self._validator = ContractValidationService(response_policy_file_path)
+        self._composer = GroundedAnswerComposer()
+        self._answer_synthesis_service = AnswerSynthesisService()
+        self._response_model_factory = ResponseModelFactory()
+
+    def generate(
+        self,
+        history_text: str,
+        user_query: str,
+        topic_result: TopicClassificationResult,
+        chunks: list[RetrievedChunk],
+        retrieved_context: str,
+    ) -> tuple[str, str, BotResponse]:
+        response_state = ResponseState.from_snapshot(topic_result.state_snapshot)
+        selected_action = self._resolve_action(topic_result)
+
+        prepared_context = self._extract_prepared_context(topic_result)
+        effective_retrieved_context = prepared_context or retrieved_context
+        effective_chunks = list(chunks)
+
+        answer_result = self._answer_synthesis_service.build_answer(
+            llm_provider=self._llm,
+            prompt_manager=self._prompt_manager,
+            composer=self._composer,
+            validator=self._validator,
+            anti_repeat_policy=self._anti_repeat_policy,
+            history_text=history_text,
+            user_query=user_query,
+            topic_result=topic_result,
+            response_state=response_state,
+            selected_action=selected_action,
+            effective_chunks=effective_chunks,
+            retrieved_context=effective_retrieved_context,
+            evidence_reason="knowledge_context",
+            answerability_status="ok",
+        )
+
+        response = self._response_model_factory.build(
+            topic_result=topic_result,
+            selected_action=selected_action,
+            effective_chunks=effective_chunks,
+            answer_text=answer_result.answer_text,
+            reasoning_summary=answer_result.reasoning_summary,
+        )
+        return answer_result.answer_prompt, answer_result.raw_answer, response
+
+    @staticmethod
+    def _extract_prepared_context(topic_result: TopicClassificationResult) -> str:
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            return ""
+        answer_block = first_agent_data.get("answer", {})
+        if not isinstance(answer_block, dict):
+            return ""
+        return str(answer_block.get("prepared_context", "")).strip()
+
+    def _resolve_action(self, topic_result: TopicClassificationResult) -> ResponseAction:
+        topic_set = {str(topic_id).strip() for topic_id in topic_result.topic_ids if str(topic_id).strip()}
+        if "product_relation_or_difference" in topic_set:
+            return ResponseAction(
+                name="compare_epc_tis",
+                primary_topic="product_relation_or_difference",
+            )
+        if {"epc_tariffs", "tis_tariffs"}.issubset(topic_set):
+            return ResponseAction(
+                name="compare_epc_tis",
+                primary_topic=topic_result.primary_topic_id,
+                secondary_topic="tis_tariffs",
+            )
+        if "purchase_ready" in topic_set:
+            if "epc_tariffs" in topic_set:
+                return ResponseAction(
+                    name="epc_tariffs",
+                    primary_topic="epc_tariffs",
+                )
+            if "tis_tariffs" in topic_set:
+                return ResponseAction(
+                    name="tis_tariffs",
+                    primary_topic="tis_tariffs",
+                )
+            for preferred_topic in (
+                "post_payment_no_access",
+                "company_services_info",
+                "free_catalog_comparison",
+                "brand_list_request",
+                "specific_brand_check",
+            ):
+                if preferred_topic in topic_set:
+                    return ResponseAction(
+                        name=self._TOPIC_TO_ACTION[preferred_topic],
+                        primary_topic=preferred_topic,
+                    )
+        non_fallback_topics = [topic for topic in topic_result.topic_ids if topic not in {"nonsense_input", "out_of_scope_request"}]
+        if non_fallback_topics:
+            for topic_key in non_fallback_topics:
+                topic_norm = str(topic_key).strip()
+                if topic_norm in self._TOPIC_TO_ACTION:
+                    return ResponseAction(
+                        name=self._TOPIC_TO_ACTION[topic_norm],
+                        primary_topic=topic_norm,
+                    )
+        for topic_id in topic_result.topic_ids:
+            topic_key = str(topic_id).strip()
+            if topic_key in self._TOPIC_TO_ACTION:
+                return ResponseAction(
+                    name=self._TOPIC_TO_ACTION[topic_key],
+                    primary_topic=topic_result.primary_topic_id,
+                )
+        return ResponseAction(
+            name="clarify_request",
+            primary_topic=topic_result.primary_topic_id,
+        )
+
+
+===== src/agents/response_policy.py =====
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from src.agents.policy.rule_engine import RuleEngine
+from src.agents.policy.types import ResponseAction, ResponseState
+
+
+def _load_response_policy(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+@dataclass(slots=True)
+class TopicActionRule:
+    required_topics_any: set[str]
+    required_topics_all: set[str]
+    action: str
+    secondary_topic: str = ""
+
+
+@dataclass(slots=True)
+class OrderedSelectorRule:
+    all_flags: set[str]
+    none_flags: set[str]
+    topic_any: set[str]
+    topic_all: set[str]
+    current_focus_any: set[str]
+    action: str
+    secondary_topic: str = ""
+
+
+@dataclass(slots=True)
+class QueryUnderstanding:
+    query: str
+    history_lower: str
+    primary_topic: str
+    topic_set: set[str]
+    closing_phrase: bool
+    business_phrase: bool
+    checkout_intent: bool
+    api_fallback_purchase: bool
+    legal_marker: bool
+    legal_context_confirmed: bool
+    price_query: bool
+    parts_query: bool
+    manager_query: bool
+    manager_request_hits: int
+    manager_phone_prompt: bool
+    phone_digits: str
+    phone_like_input: bool
+    greeting_query: bool
+    has_assistant_history: bool
+    deescalation_query: bool
+    compare_epc_tis_query: bool
+    current_focus: str
+    docs_query: bool
+    out_of_scope_query: bool
+    services_overview_query: bool
+
+
+class ResponseActionSelector:
+    def __init__(self, response_policy_file_path: Path) -> None:
+        policy = _load_response_policy(response_policy_file_path)
+        project_root = Path(__file__).resolve().parents[2]
+        self._rule_engine = RuleEngine(project_root / "config/response_understanding_rules.yaml")
+        selector = policy.get("selector", {}) if isinstance(policy.get("selector", {}), dict) else {}
+        ordered_raw = selector.get("ordered_rules", [])
+        self._ordered_rules: list[OrderedSelectorRule] = []
+        if isinstance(ordered_raw, list):
+            for item in ordered_raw:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action", "")).strip()
+                if not action:
+                    continue
+                self._ordered_rules.append(
+                    OrderedSelectorRule(
+                        all_flags={str(v).strip() for v in item.get("all_flags", []) if str(v).strip()},
+                        none_flags={str(v).strip() for v in item.get("none_flags", []) if str(v).strip()},
+                        topic_any={str(v).strip() for v in item.get("topic_any", []) if str(v).strip()},
+                        topic_all={str(v).strip() for v in item.get("topic_all", []) if str(v).strip()},
+                        current_focus_any={str(v).strip() for v in item.get("current_focus_any", []) if str(v).strip()},
+                        action=action,
+                        secondary_topic=str(item.get("secondary_topic", "")).strip(),
+                    )
+                )
+        rules_raw = selector.get("topic_action_rules", [])
+        self._topic_action_rules: list[TopicActionRule] = []
+        if isinstance(rules_raw, list):
+            for item in rules_raw:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action", "")).strip()
+                if not action:
+                    continue
+                self._topic_action_rules.append(
+                    TopicActionRule(
+                        required_topics_any={str(v).strip() for v in item.get("required_topics_any", []) if str(v).strip()},
+                        required_topics_all={str(v).strip() for v in item.get("required_topics_all", []) if str(v).strip()},
+                        action=action,
+                        secondary_topic=str(item.get("secondary_topic", "")).strip(),
+                    )
+                )
+        self._default_action = str(selector.get("default_action", "clarify_request")).strip() or "clarify_request"
+        self._known_actions: set[str] = {self._default_action}
+        self._known_actions.update(rule.action for rule in self._ordered_rules)
+        self._known_actions.update(rule.action for rule in self._topic_action_rules)
+        templates_raw = policy.get("templates", {})
+        if isinstance(templates_raw, dict):
+            self._known_actions.update(str(key).strip() for key in templates_raw.keys() if str(key).strip())
+
+        allowed_raw = selector.get("allowed_actions_by_focus", {})
+        self._allowed_actions_by_focus: dict[str, set[str]] = {}
+        if isinstance(allowed_raw, dict):
+            for focus, actions in allowed_raw.items():
+                if not isinstance(actions, list):
+                    continue
+                parsed = {str(item).strip() for item in actions if str(item).strip()}
+                if parsed:
+                    self._allowed_actions_by_focus[str(focus).strip()] = parsed
+
+    def select_from_planner(
+        self,
+        topic_ids: list[str],
+        planned_action: str,
+        current_focus: str,
+    ) -> ResponseAction | None:
+        action = str(planned_action).strip()
+        if not action:
+            return None
+        if action not in self._known_actions:
+            return None
+        focus = str(current_focus).strip().lower()
+        allowed = self._allowed_actions_by_focus.get(focus)
+        if allowed is not None and action not in allowed:
+            return None
+        primary_topic = topic_ids[0] if topic_ids else "out_of_scope_request"
+        return ResponseAction(action, primary_topic)
+
+    def select(
+        self,
+        topic_ids: list[str],
+        state: ResponseState,
+        user_query: str,
+        history_text: str = "",
+        turn_analysis: dict[str, Any] | None = None,
+    ) -> ResponseAction:
+        topic_set = set(topic_ids)
+        primary_topic = topic_ids[0] if topic_ids else "out_of_scope_request"
+        query_data = self._understand(
+            topic_set=topic_set,
+            primary_topic=primary_topic,
+            user_query=user_query,
+            history_text=history_text,
+            state=state,
+            turn_analysis=turn_analysis,
+        )
+        action_by_ordered = self._select_by_ordered_rules(query_data=query_data, state=state, topic_set=topic_set, primary_topic=primary_topic)
+        if action_by_ordered is not None:
+            return action_by_ordered
+        action_by_topic = self._select_by_topic_rules(topic_set, primary_topic)
+        if action_by_topic is not None:
+            return action_by_topic
+        return ResponseAction(self._default_action, primary_topic)
+
+    def _select_by_ordered_rules(
+        self,
+        query_data: QueryUnderstanding,
+        state: ResponseState,
+        topic_set: set[str],
+        primary_topic: str,
+    ) -> ResponseAction | None:
+        flags = self._build_rule_flags(query_data, state, topic_set)
+        for rule in self._ordered_rules:
+            if rule.all_flags and not all(flags.get(flag, False) for flag in rule.all_flags):
+                continue
+            if rule.none_flags and any(flags.get(flag, False) for flag in rule.none_flags):
+                continue
+            if rule.topic_all and not rule.topic_all.issubset(topic_set):
+                continue
+            if rule.topic_any and not topic_set.intersection(rule.topic_any):
+                continue
+            if rule.current_focus_any and query_data.current_focus not in rule.current_focus_any:
+                continue
+            secondary = rule.secondary_topic if rule.secondary_topic else None
+            return ResponseAction(rule.action, primary_topic, secondary)
+        return None
+
+    @staticmethod
+    def _build_rule_flags(query_data: QueryUnderstanding, state: ResponseState, topic_set: set[str]) -> dict[str, bool]:
+        return {
+            "conversation_closed": state.conversation_closed,
+            "closing_phrase": query_data.closing_phrase,
+            "business_phrase": query_data.business_phrase,
+            "not_greeted": not state.greeted,
+            "no_assistant_history": not query_data.has_assistant_history,
+            "greeting_query": query_data.greeting_query,
+            "manager_phone_prompt": query_data.manager_phone_prompt,
+            "phone_like_input": query_data.phone_like_input,
+            "phone_digits_eq_11": len(query_data.phone_digits) == 11,
+            "out_of_scope_query": query_data.out_of_scope_query,
+            "deescalation_query": query_data.deescalation_query,
+            "docs_query": query_data.docs_query,
+            "services_overview_without_checkout": query_data.services_overview_query and not query_data.checkout_intent,
+            "parts_query": query_data.parts_query,
+            "manager_query_or_topic_human": query_data.manager_query or ("human_operator_request" in topic_set),
+            "manager_request_hits_ge_2": query_data.manager_request_hits >= 2,
+            "api_fallback_purchase": query_data.api_fallback_purchase,
+            "checkout_intent": query_data.checkout_intent,
+            "legal_context_confirmed": query_data.legal_context_confirmed,
+        }
+
+    def _select_by_topic_rules(self, topic_set: set[str], primary_topic: str) -> ResponseAction | None:
+        for rule in self._topic_action_rules:
+            if rule.required_topics_all and not rule.required_topics_all.issubset(topic_set):
+                continue
+            if rule.required_topics_any and not topic_set.intersection(rule.required_topics_any):
+                continue
+            secondary = rule.secondary_topic if rule.secondary_topic else None
+            return ResponseAction(rule.action, primary_topic, secondary)
+        return None
+
+    def _understand(
+        self,
+        topic_set: set[str],
+        primary_topic: str,
+        user_query: str,
+        history_text: str,
+        state: ResponseState,
+        turn_analysis: dict[str, Any] | None = None,
+    ) -> QueryUnderstanding:
+        query = user_query.lower().replace("ё", "е")
+        history_lower = history_text.lower().replace("ё", "е")
+        analysis = turn_analysis or {}
+        analysis_signals = {str(item) for item in analysis.get("signals", []) if str(item).strip()}
+        analysis_slots_raw = analysis.get("slots", {})
+        analysis_slots = {str(key): bool(value) for key, value in analysis_slots_raw.items()} if isinstance(analysis_slots_raw, dict) else {}
+        closing_phrase = self._rule_engine.match("closing_phrase", query)
+        business_phrase = self._rule_engine.match("business_phrase", query)
+        checkout_intent = self._rule_engine.match("checkout_intent", query)
+        api_fallback_purchase = self._rule_engine.match("api_fallback_purchase", query)
+        legal_marker = self._rule_engine.match("legal_marker", query)
+        legal_context_confirmed = "legal_entity_purchase_flow" in topic_set or state.client_type == "legal" or legal_marker
+        price_query = self._rule_engine.match("price_query", query)
+        parts_query = bool(analysis.get("parts_query", False) or "parts_selection" in analysis_signals or self._rule_engine.match("parts_query", query))
+        manager_query = bool(analysis.get("manager_query", False) or "human" in analysis_signals or self._rule_engine.match("manager_query", query))
+        manager_request_hits = self._rule_engine.findall_count("manager_query", history_lower)
+        last_assistant_line = self._extract_last_assistant(history_text).lower().replace("ё", "е")
+        awaiting_phone = self._rule_engine.match("awaiting_phone", last_assistant_line)
+        phone_validation_prompt = self._rule_engine.match("phone_validation_prompt", last_assistant_line)
+        manager_in_history = self._rule_engine.match("manager_query", history_lower)
+        manager_phone_prompt = (awaiting_phone and ("менедж" in last_assistant_line or manager_in_history or phone_validation_prompt)) or phone_validation_prompt
+        phone_digits = self._extract_phone_digits(query)
+        phone_like_input = self._is_phone_like_input(query, phone_digits)
+        greeting_query = self._rule_engine.match("greeting_query", query.strip())
+        has_assistant_history = self._rule_engine.match_multiline("has_assistant_history", history_lower)
+        deescalation_query = self._rule_engine.match("deescalation_query", query)
+        compare_epc_tis_query = self._rule_engine.match("compare_epc_tis_query", query)
+        current_focus = str(analysis.get("current_focus", "")).strip().lower() or self._resolve_current_focus(query, topic_set, primary_topic, price_query, compare_epc_tis_query)
+        docs_query = bool(
+            analysis_slots.get("company_documents_card", False)
+            or analysis.get("docs_query", False)
+            or self._rule_engine.match("docs_query", query)
+            or (self._rule_engine.match("docs_query", history_lower) and self._rule_engine.match("legal_marker", query))
+        )
+        out_of_scope_query = bool(
+            analysis_slots.get("geo_map_request", False)
+            or analysis_slots.get("out_of_scope_catalog", False)
+            or analysis.get("out_of_scope_query", False)
+            or "out_of_scope_catalog" in analysis_signals
+            or self._rule_engine.match("out_of_scope_query", query)
+        )
+        if manager_phone_prompt and phone_like_input:
+            out_of_scope_query = False
+        services_overview_query = bool(
+            analysis_slots.get("company_services_overview", False)
+            or analysis.get("services_overview_query", False)
+            or self._rule_engine.match("services_overview_query", query)
+        )
+        return QueryUnderstanding(
+            query=query,
+            history_lower=history_lower,
+            primary_topic=primary_topic,
+            topic_set=topic_set,
+            closing_phrase=closing_phrase,
+            business_phrase=business_phrase,
+            checkout_intent=checkout_intent,
+            api_fallback_purchase=api_fallback_purchase,
+            legal_marker=legal_marker,
+            legal_context_confirmed=legal_context_confirmed,
+            price_query=price_query,
+            parts_query=parts_query,
+            manager_query=manager_query,
+            manager_request_hits=manager_request_hits,
+            manager_phone_prompt=manager_phone_prompt,
+            phone_digits=phone_digits,
+            phone_like_input=phone_like_input,
+            greeting_query=greeting_query,
+            has_assistant_history=has_assistant_history,
+            deescalation_query=deescalation_query,
+            compare_epc_tis_query=compare_epc_tis_query,
+            current_focus=current_focus,
+            docs_query=docs_query,
+            out_of_scope_query=out_of_scope_query,
+            services_overview_query=services_overview_query,
+        )
+
+    def _resolve_current_focus(
+        self,
+        query: str,
+        topic_set: set[str],
+        primary_topic: str,
+        price_query: bool,
+        compare_epc_tis_query: bool,
+    ) -> str:
+        return self._rule_engine.resolve_focus(
+            query=query,
+            topic_set=topic_set,
+            primary_topic=primary_topic,
+            price_query=price_query,
+            compare_epc_tis_query=compare_epc_tis_query,
+        )
+
+    @staticmethod
+    def _extract_last_assistant(history_text: str) -> str:
+        lines = [line.strip() for line in history_text.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if line.lower().startswith("assistant:"):
+                return line.split(":", 1)[1].strip()
+        return ""
+
+    @staticmethod
+    def _extract_phone_digits(query: str) -> str:
+        return "".join(ch for ch in query if ch.isdigit())
+
+    def _is_phone_like_input(self, query: str, phone_digits: str) -> bool:
+        if len(phone_digits) >= 5:
+            return True
+        return self._rule_engine.match("phone_like_keywords", query)
+
+
+class ResponseContractValidator:
+    def __init__(self, response_policy_file_path: Path) -> None:
+        policy = _load_response_policy(response_policy_file_path)
+        contracts_raw = policy.get("contracts", {})
+        self._contracts: dict[str, list[str]] = {}
+        if isinstance(contracts_raw, dict):
+            for action, tokens in contracts_raw.items():
+                if not isinstance(tokens, list):
+                    continue
+                normalized = [str(token).strip().lower() for token in tokens if str(token).strip()]
+                if normalized:
+                    self._contracts[str(action).strip()] = normalized
+
+    def validate(self, action: ResponseAction, answer_text: str) -> bool:
+        required = self._contracts.get(action.name)
+        if not required:
+            return True
+        normalized = answer_text.lower().replace("ё", "е")
+        return all(token in normalized for token in required)
+
+
+===== src/agents/policy/rule_engine.py =====
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+class RuleEngine:
+    """Declarative regex rule engine for response understanding/focus."""
+
+    def __init__(self, rules_path: Path) -> None:
+        raw = yaml.safe_load(rules_path.read_text(encoding="utf-8")) if rules_path.exists() else {}
+        self._rules = raw if isinstance(raw, dict) else {}
+        patterns = self._rules.get("patterns", {})
+        self._patterns: dict[str, re.Pattern[str]] = {}
+        if isinstance(patterns, dict):
+            for name, pattern in patterns.items():
+                if not isinstance(pattern, str) or not pattern.strip():
+                    continue
+                self._patterns[str(name).strip()] = re.compile(pattern)
+
+    def match(self, name: str, text: str) -> bool:
+        pattern = self._patterns.get(name)
+        if pattern is None:
+            return False
+        return bool(pattern.search(text))
+
+    def findall_count(self, name: str, text: str) -> int:
+        pattern = self._patterns.get(name)
+        if pattern is None:
+            return 0
+        return len(pattern.findall(text))
+
+    def match_multiline(self, name: str, text: str) -> bool:
+        pattern = self._patterns.get(name)
+        if pattern is None:
+            return False
+        return bool(re.search(pattern.pattern, text, flags=re.MULTILINE))
+
+    def resolve_focus(
+        self,
+        query: str,
+        topic_set: set[str],
+        primary_topic: str,
+        price_query: bool,
+        compare_epc_tis_query: bool,
+    ) -> str:
+        rules = self._rules.get("focus_rules", [])
+        if isinstance(rules, list):
+            for item in rules:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("pattern", "")).strip()
+                required_any = {str(v).strip() for v in item.get("required_topics_any", []) if str(v).strip()}
+                required_all = {str(v).strip() for v in item.get("required_topics_all", []) if str(v).strip()}
+                excluded = {str(v).strip() for v in item.get("excluded_topics", []) if str(v).strip()}
+                need_price = item.get("require_price_query")
+                need_compare = item.get("require_compare_query")
+                if required_all and not required_all.issubset(topic_set):
+                    continue
+                if required_any and not topic_set.intersection(required_any):
+                    continue
+                if excluded and topic_set.intersection(excluded):
+                    continue
+                if need_price is True and not price_query:
+                    continue
+                if need_price is False and price_query:
+                    continue
+                if need_compare is True and not compare_epc_tis_query:
+                    continue
+                if need_compare is False and compare_epc_tis_query:
+                    continue
+                if name and not self.match(name, query):
+                    continue
+                action = str(item.get("focus", "")).strip()
+                if action:
+                    return action
+        both_tariff_topics = "epc_tariffs" in topic_set and "tis_tariffs" in topic_set
+        tis_mentioned = self.match("tis_mentioned", query)
+        epc_mentioned = self.match("epc_mentioned", query)
+        if compare_epc_tis_query and (both_tariff_topics or (tis_mentioned and epc_mentioned)):
+            return "compare_epc_tis"
+        if tis_mentioned and not epc_mentioned:
+            return "tis_tariffs"
+        if epc_mentioned and not tis_mentioned:
+            return "epc_tariffs"
+        if tis_mentioned and epc_mentioned:
+            return "compare_epc_tis"
+        if not price_query and not both_tariff_topics and primary_topic not in {"tis_tariffs", "epc_tariffs"}:
+            return "unknown"
+        if both_tariff_topics and primary_topic in {"tis_tariffs", "epc_tariffs"}:
+            return primary_topic
+        if "tis_tariffs" in topic_set and "epc_tariffs" not in topic_set:
+            return "tis_tariffs"
+        if "epc_tariffs" in topic_set and "tis_tariffs" not in topic_set:
+            return "epc_tariffs"
+        if "company_services_info" in topic_set:
+            return "company_services"
+        return "unknown"
+
+
+===== src/agents/response_services/pipeline_services.py =====
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from src.agents.policy.types import ResponseAction, ResponseState
+from src.core.models import (
+    BotResponse,
+    EvidenceItem,
+    EvidencePack,
+    RetrievedChunk,
+    TopicClassificationResult,
+)
+
+
+@dataclass(slots=True)
+class AnswerBuildResult:
+    answer_prompt: str
+    answer_text: str
+    raw_answer: str
+    reasoning_summary: str
+
+
+class GroundedAnswerComposer:
+    """Compose final answer only from already prepared knowledge chunks."""
+
+    def compose(
+        self,
+        action_name: str,
+        response_plan: list[str],
+        chunks: list[RetrievedChunk],
+        fallback_answer: str,
+    ) -> str:
+        parts = self._extract_parts(chunks)
+        if not parts:
+            return fallback_answer
+        ordered = self._order_parts(parts, response_plan)
+        if not ordered:
+            return fallback_answer
+        return "\n".join(ordered[:3]).strip() or fallback_answer
+
+    @staticmethod
+    def _extract_parts(chunks: list[RetrievedChunk]) -> list[tuple[str, str]]:
+        parts: list[tuple[str, str]] = []
+        for chunk in chunks[:4]:
+            text = chunk.text.strip()
+            section = (
+                str(chunk.metadata.get("section_tag", "general")).strip()
+                if isinstance(chunk.metadata, dict)
+                else "general"
+            )
+            if not text:
+                continue
+            for line in text.splitlines():
+                line = line.strip()
+                if len(line) < 20:
+                    continue
+                item = (section, line)
+                if item not in parts:
+                    parts.append(item)
+        return parts
+
+    @staticmethod
+    def _order_parts(parts: list[tuple[str, str]], response_plan: list[str]) -> list[str]:
+        if not response_plan:
+            return [text for _, text in parts]
+        plan_weight = {name: float(len(response_plan) - idx) for idx, name in enumerate(response_plan)}
+        scored: list[tuple[float, str]] = []
+        for section, text in parts:
+            score = plan_weight.get(section, 0.0)
+            scored.append((score, text))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored]
+
+
+class AnswerSynthesisService:
+    def build_answer(
+        self,
+        llm_provider: Any,
+        prompt_manager: Any,
+        composer: Any,
+        validator: Any,
+        anti_repeat_policy: Any,
+        history_text: str,
+        user_query: str,
+        topic_result: TopicClassificationResult,
+        response_state: ResponseState,
+        selected_action: ResponseAction,
+        effective_chunks: list[RetrievedChunk],
+        retrieved_context: str,
+        evidence_reason: str,
+        answerability_status: str,
+    ) -> AnswerBuildResult:
+        effective_context = "\n\n".join(chunk.text for chunk in effective_chunks)
+        first_agent_output = (
+            topic_result.diagnostics.get("first_agent_output", {})
+            if isinstance(topic_result.diagnostics, dict)
+            else {}
+        )
+        first_agent_data = (
+            topic_result.diagnostics.get("first_agent_data", {})
+            if isinstance(topic_result.diagnostics, dict)
+            else {}
+        )
+        rewritten_query = self._extract_rewritten_query(first_agent_output, user_query)
+        intents_with_scores = self._extract_intents_with_scores(first_agent_output, topic_result)
+        normalized_brands = self._extract_normalized_brands(first_agent_data)
+        dialog_text = self._to_client_bot_dialog(history_text=history_text, user_query=user_query)
+        answer_prompt = prompt_manager.build_answer_prompt(
+            dialog_text=dialog_text,
+            rewritten_query=rewritten_query,
+            intents_with_scores=intents_with_scores,
+            normalized_brands=normalized_brands,
+            retrieved_facts_text=effective_context or retrieved_context,
+            user_query=user_query,
+        )
+        fallback_answer = self._fallback_answer_from_context(retrieved_context or effective_context)
+        deterministic_answer = composer.compose(
+            action_name=selected_action.name,
+            response_plan=topic_result.response_plan,
+            chunks=effective_chunks,
+            fallback_answer=fallback_answer,
+        )
+        answer_text, raw_answer = self._generate_answer_text(
+            llm_provider=llm_provider,
+            answer_prompt=answer_prompt,
+            selected_action=selected_action,
+            validator=validator,
+            deterministic_answer=deterministic_answer,
+            fallback_answer=fallback_answer,
+            answerability_status=answerability_status,
+        )
+        if not validator.validate(selected_action, answer_text):
+            validated_fallback = fallback_answer if validator.validate(selected_action, fallback_answer) else ""
+            answer_text = validated_fallback
+        answer_text = self._strip_redundant_greeting(answer_text, response_state)
+        answer_text = self._use_alternative_context_line_if_repeated(
+            answer_text=answer_text,
+            history_text=history_text,
+            context_text=retrieved_context or effective_context,
+        )
+        answer_text = anti_repeat_policy.apply(
+            action=selected_action,
+            answer_text=answer_text,
+            history_text=history_text,
+            user_query=user_query,
+        )
+        if not raw_answer:
+            raw_answer = json.dumps({"answer_text": answer_text}, ensure_ascii=False)
+        reasoning_summary = (
+            f"Детерминированное действие: {selected_action.name}. "
+            f"Темы: {topic_result.topic_ids}. "
+            f"evidence={evidence_reason}; hits={len(effective_chunks)}"
+        )
+        return AnswerBuildResult(
+            answer_prompt=answer_prompt,
+            answer_text=answer_text,
+            raw_answer=raw_answer,
+            reasoning_summary=reasoning_summary,
+        )
+
+    def _generate_answer_text(
+        self,
+        llm_provider: Any,
+        answer_prompt: str,
+        selected_action: ResponseAction,
+        validator: Any,
+        deterministic_answer: str,
+        fallback_answer: str,
+        answerability_status: str,
+    ) -> tuple[str, str]:
+        raw_answer = ""
+        fallback_candidates = [
+            deterministic_answer,
+            fallback_answer,
+        ]
+        fallback_text = next((item for item in fallback_candidates if str(item or "").strip()), "")
+
+        try:
+            raw_answer = str(llm_provider.generate_json(answer_prompt) or "").strip()
+            model_answer = self._parse_answer_text(raw_answer)
+            if model_answer and validator.validate(selected_action, model_answer):
+                return model_answer, raw_answer
+        except Exception:
+            pass
+
+        if answerability_status != "ok" and fallback_answer:
+            return fallback_answer, raw_answer
+        if fallback_text:
+            return fallback_text, raw_answer
+        return "", raw_answer
+
+    @staticmethod
+    def _parse_answer_text(raw_answer: str) -> str:
+        if not raw_answer:
+            return ""
+        parsed = AnswerSynthesisService._safe_load_json_object(raw_answer)
+        if not isinstance(parsed, dict):
+            return ""
+        return str(parsed.get("answer_text", "")).strip()
+
+    @staticmethod
+    def _safe_load_json_object(raw_text: str) -> dict[str, object] | None:
+        try:
+            parsed = json.loads(raw_text)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+            if not match:
+                return None
+            try:
+                parsed = json.loads(match.group(0))
+                return parsed if isinstance(parsed, dict) else None
+            except Exception:
+                return None
+
+    @staticmethod
+    def _extract_rewritten_query(first_agent_output: dict[str, object], user_query: str) -> str:
+        if isinstance(first_agent_output, dict):
+            value = str(first_agent_output.get("rewritten_query", "")).strip()
+            if value:
+                return value
+        return user_query
+
+    @staticmethod
+    def _extract_intents_with_scores(first_agent_output: dict[str, object], topic_result: TopicClassificationResult) -> str:
+        if isinstance(first_agent_output, dict):
+            scores = first_agent_output.get("intent_scores", [])
+            if isinstance(scores, list) and scores:
+                formatted: list[str] = []
+                for row in scores:
+                    if not isinstance(row, dict):
+                        continue
+                    intent = str(row.get("intent", "")).strip()
+                    try:
+                        score = float(row.get("score", 0.0))
+                    except (TypeError, ValueError):
+                        score = 0.0
+                    if intent:
+                        formatted.append(f"{intent}: {score:.2f}")
+                if formatted:
+                    return "; ".join(formatted)
+        return f"{topic_result.primary_topic_id}: {float(topic_result.confidence):.2f}"
+
+    @staticmethod
+    def _extract_normalized_brands(first_agent_data: dict[str, object]) -> str:
+        if isinstance(first_agent_data, dict):
+            brands = first_agent_data.get("brands", {})
+            if isinstance(brands, dict):
+                normalized = brands.get("normalized", [])
+                if isinstance(normalized, list):
+                    values = [str(item).strip() for item in normalized if str(item).strip()]
+                    if values:
+                        return ", ".join(values)
+        return "-"
+
+    @staticmethod
+    def _to_client_bot_dialog(history_text: str, user_query: str) -> str:
+        lines: list[str] = []
+        for raw in str(history_text).splitlines():
+            row = raw.strip()
+            if not row:
+                continue
+            if row.lower().startswith("user:"):
+                lines.append(f"клиент: {row.split(':', 1)[1].strip()}")
+            elif row.lower().startswith("assistant:"):
+                lines.append(f"бот: {row.split(':', 1)[1].strip()}")
+            else:
+                lines.append(row)
+        last_client = ""
+        for line in reversed(lines):
+            if line.lower().startswith("клиент:"):
+                last_client = line.split(":", 1)[1].strip()
+                break
+        current_query = str(user_query or "").strip()
+        if current_query and last_client != current_query:
+            lines.append(f"клиент: {current_query}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _strip_redundant_greeting(answer_text: str, response_state: ResponseState) -> str:
+        if not response_state.greeted:
+            return answer_text
+        compact = answer_text.lstrip()
+        patterns = (
+            r"^здравствуйте[!,.\s-]*",
+            r"^добрый\s+день[!,.\s-]*",
+            r"^добрый\s+вечер[!,.\s-]*",
+            r"^привет[!,.\s-]*",
+        )
+        normalized = compact.lower().replace("ё", "е")
+        stripped = compact
+        for pattern in patterns:
+            if re.match(pattern, normalized):
+                stripped = re.sub(pattern, "", stripped, flags=re.IGNORECASE).lstrip()
+                break
+        return stripped or answer_text
+
+    @staticmethod
+    def _fallback_answer_from_context(context_text: str) -> str:
+        lines = AnswerSynthesisService._meaningful_context_lines(context_text)
+        if not lines:
+            return ""
+        return "\n".join(lines[:2]).strip()
+
+    @staticmethod
+    def _use_alternative_context_line_if_repeated(
+        answer_text: str,
+        history_text: str,
+        context_text: str,
+    ) -> str:
+        normalized_answer = AnswerSynthesisService._normalize_text(answer_text)
+        if not normalized_answer:
+            return answer_text
+        recent_answers = AnswerSynthesisService._recent_assistant_answers(history_text, limit=2)
+        recent_normalized = {AnswerSynthesisService._normalize_text(item) for item in recent_answers}
+        if normalized_answer not in recent_normalized:
+            return answer_text
+        for candidate in AnswerSynthesisService._meaningful_context_lines(context_text):
+            normalized_candidate = AnswerSynthesisService._normalize_text(candidate)
+            if not normalized_candidate:
+                continue
+            if normalized_candidate not in recent_normalized and normalized_candidate != normalized_answer:
+                return candidate
+        return answer_text
+
+    @staticmethod
+    def _meaningful_context_lines(context_text: str) -> list[str]:
+        lines: list[str] = []
+        for raw in str(context_text or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if line.lower().startswith("нормализованные бренды:"):
+                continue
+            if line not in lines:
+                lines.append(line)
+        if lines:
+            return lines
+        fallback = str(context_text or "").strip()
+        return [fallback] if fallback else []
+
+    @staticmethod
+    def _recent_assistant_answers(history_text: str, limit: int = 2) -> list[str]:
+        lines = [line.strip() for line in str(history_text).splitlines() if line.strip()]
+        answers: list[str] = []
+        current: list[str] = []
+        collecting = False
+        for line in reversed(lines):
+            lowered = line.lower()
+            if lowered.startswith("user:"):
+                if collecting and current:
+                    answers.append("\n".join(reversed(current)).strip())
+                    current = []
+                    collecting = False
+                continue
+            if lowered.startswith("assistant:"):
+                text = line.split(":", 1)[1].strip()
+                if text:
+                    current.append(text)
+                answers.append("\n".join(reversed(current)).strip())
+                current = []
+                collecting = False
+                if len(answers) >= limit:
+                    break
+                continue
+            current.append(line)
+            collecting = True
+        return answers
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").lower().replace("ё", "е")).strip()
+
+
+class ResponseModelFactory:
+    def build(
+        self,
+        topic_result: TopicClassificationResult,
+        selected_action: ResponseAction,
+        effective_chunks: list[RetrievedChunk],
+        answer_text: str,
+        reasoning_summary: str,
+    ) -> BotResponse:
+        retrieval_trace = topic_result.retrieval_context if isinstance(topic_result.retrieval_context, dict) else {}
+        trace_complete = self._is_trace_complete(retrieval_trace)
+        diagnostics = topic_result.diagnostics if isinstance(topic_result.diagnostics, dict) else {}
+        first_agent_data = diagnostics.get("first_agent_data", {})
+        if not isinstance(first_agent_data, dict):
+            first_agent_data = {}
+        answer_block = first_agent_data.get("answer", {})
+        if not isinstance(answer_block, dict):
+            answer_block = {}
+        answer_evidence_items = answer_block.get("evidence_items", [])
+        if not isinstance(answer_evidence_items, list):
+            answer_evidence_items = []
+        used_evidence_ids = answer_block.get("used_evidence_ids", [])
+        if not isinstance(used_evidence_ids, list):
+            used_evidence_ids = []
+
+        if answer_evidence_items:
+            evidence_items = [
+                EvidenceItem(
+                    evidence_id=str(item.get("evidence_id", "")).strip(),
+                    text=str(item.get("text", "")).strip(),
+                    score=float(item.get("score", 0.0) or 0.0),
+                    source=str(item.get("source", "")).strip() or "knowledge",
+                    action_name=selected_action.name,
+                    why_selected="prepared_context",
+                    section_tag=str(item.get("section_tag", "general")).strip() or "general",
+                    source_scores={
+                        "bm25": 0.0,
+                        "dense": 0.0,
+                        "final": float(item.get("score", 0.0) or 0.0),
+                    },
+                )
+                for item in answer_evidence_items
+                if str(item.get("evidence_id", "")).strip() and str(item.get("text", "")).strip()
+            ]
+        else:
+            evidence_items = [
+                EvidenceItem(
+                    evidence_id=chunk.metadata.get("entry_index", ""),
+                    text=chunk.text,
+                    score=chunk.score,
+                    source=chunk.source,
+                    action_name=selected_action.name,
+                    why_selected=str(chunk.metadata.get("why_selected", "")),
+                    section_tag=str(chunk.metadata.get("section_tag", "general")),
+                    source_scores={
+                        "bm25": float(chunk.metadata.get("bm25_score", 0.0) or 0.0),
+                        "dense": float(chunk.metadata.get("dense_score", 0.0) or 0.0),
+                        "final": float(chunk.score),
+                    },
+                )
+                for chunk in effective_chunks
+            ]
+
+        evidence_pack = EvidencePack(
+            items=evidence_items,
+            status=reasoning_summary.split("evidence=")[-1].split(";")[0] if "evidence=" in reasoning_summary else "unknown",
+        )
+        return BotResponse(
+            answer_text=answer_text,
+            reasoning_summary=reasoning_summary,
+            topic_id=topic_result.primary_topic_id,
+            topic_ids=topic_result.topic_ids,
+            sources=[item.source for item in evidence_items],
+            action_name=selected_action.name,
+            planned_action=selected_action.name,
+            used_evidence_ids=[
+                str(item).strip()
+                for item in used_evidence_ids
+                if str(item).strip()
+            ] or [
+                item.evidence_id
+                for item in evidence_items
+                if item.evidence_id
+            ],
+            answer_sections=list(topic_result.response_plan),
+            contract_flags={
+                "clarify_required": bool(topic_result.clarify_required),
+                "nonsense_input": bool(topic_result.nonsense_input),
+                "abuse_input": bool(topic_result.abuse_input),
+                "planned_action_matches": True,
+                "trace_complete": trace_complete,
+            },
+            media_refs=[],
+            evidence_pack=evidence_pack,
+        )
+
+    @staticmethod
+    def _is_trace_complete(trace: dict[str, object]) -> bool:
+        required_keys = {
+            "trace_id",
+            "query_received",
+            "query_extended",
+            "bm25_hits",
+            "dense_hits",
+            "merged_candidates",
+            "reranked_topk",
+            "dropped_candidates",
+        }
+        return required_keys.issubset(set(trace.keys()))
+
+
+===== src/retrieval/fact_repository.py =====
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+from src.core.models import FactRecord
+
+
+class FactRepository:
+    _SAFE_TOPIC_FALLBACK_ACTIONS = {
+        "",
+        "clarify_request",
+        "out_of_scope_response",
+    }
+
+    def __init__(self, facts_file_path: Path) -> None:
+        self._facts_file_path = facts_file_path
+        self._facts = self._load()
+
+    def list_facts(self) -> list[FactRecord]:
+        return list(self._facts)
+
+    def _load(self) -> list[FactRecord]:
+        if not self._facts_file_path.exists():
+            return []
+        raw = yaml.safe_load(self._facts_file_path.read_text(encoding="utf-8")) or {}
+        facts: list[FactRecord] = []
+        for item in raw.get("facts", []):
+            if not isinstance(item, dict):
+                continue
+            fact_id = str(item.get("fact_id", "")).strip()
+            topic = str(item.get("topic", "")).strip()
+            text = str(item.get("text", "")).strip()
+            if not fact_id or not topic or not text:
+                continue
+            facts.append(
+                FactRecord(
+                    fact_id=fact_id,
+                    topic=topic,
+                    subtopic=str(item.get("subtopic", "")).strip(),
+                    entity_type=str(item.get("entity_type", "")).strip(),
+                    entity=str(item.get("entity", "")).strip(),
+                    text=text,
+                    fact_type=str(item.get("fact_type", "knowledge")).strip().lower() or "knowledge",
+                    section_tag=str(item.get("section_tag", "general")).strip().lower() or "general",
+                    priority=int(item.get("priority", 0)),
+                    aliases=[str(alias).strip().lower() for alias in item.get("aliases", []) if str(alias).strip()],
+                    action_tags=[str(tag).strip() for tag in item.get("action_tags", []) if str(tag).strip()],
+                )
+            )
+        return facts
+
+    def find_best(self, topic_ids: list[str], action_name: str, user_query: str, history_text: str) -> FactRecord | None:
+        if not self._facts:
+            return None
+        query = self._normalize(user_query)
+        history = self._normalize(history_text)
+        topic_set = set(topic_ids)
+        action_candidates = [
+            fact
+            for fact in self._facts
+            if action_name and action_name in fact.action_tags
+        ]
+        # Strict action-tag filtering by default.
+        if action_candidates:
+            candidate_pool = action_candidates
+        elif action_name in self._SAFE_TOPIC_FALLBACK_ACTIONS:
+            candidate_pool = [fact for fact in self._facts if fact.topic in topic_set]
+        else:
+            return None
+
+        if not candidate_pool:
+            return None
+        candidates: list[tuple[int, FactRecord]] = []
+        for fact in candidate_pool:
+            if fact.fact_type != "knowledge":
+                continue
+            score = 0
+            topic_match = fact.topic in topic_set
+            action_match = bool(action_name and action_name in fact.action_tags)
+            # Guardrail: do not pick facts from unrelated actions/topics only by history aliases.
+            if not (topic_match or action_match):
+                continue
+            if topic_match:
+                score += 8
+            if action_match:
+                score += 12
+            if fact.subtopic and fact.subtopic in topic_set:
+                score += 3
+            query_alias_hits = sum(1 for alias in fact.aliases if alias and alias in query)
+            history_alias_hits = sum(1 for alias in fact.aliases if alias and alias in history)
+            # Current user query must dominate over historical context.
+            score += query_alias_hits * 8
+            score += history_alias_hits * 2
+            if score <= 0:
+                continue
+            score += fact.priority
+            candidates.append((score, fact))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
+
+
+===== src/config/response_policy.yaml =====
+selector:
+  default_action: "clarify_request"
+  allowed_actions_by_focus:
+    compare_epc_tis: ["compare_epc_tis"]
+    tis_tariffs: ["tis_tariffs"]
+    epc_tariffs: ["epc_tariffs"]
+    macos_support: ["macos_support"]
+    company_services_documents: ["company_services_documents"]
+    company_services: ["company_services"]
+    parts_selection_not_supported: ["parts_selection_not_supported"]
+    out_of_scope_response: ["out_of_scope_response"]
+    brand_availability: ["brand_availability"]
+    demo_policy: ["demo_policy"]
+    purchase_entry: ["ask_legal_status"]
+    payment_flow: ["request_requisites", "ask_legal_status"]
+    human_operator_request: ["human_operator", "human_operator_collect_phone", "human_operator_phone_invalid", "human_operator_phone_confirm"]
+    api_integration: ["api_unavailable", "api_then_purchase"]
+    post_payment_no_access: ["post_payment_no_access_handoff"]
+    post_payment_access_timing: ["post_payment_access_info"]
+    usage_limits: ["usage_limits_info"]
+    multi_device_access: ["multi_device_access_info"]
+    manager_setup_support: ["manager_setup_support_info"]
+  ordered_rules:
+    - all_flags: ["conversation_closed", "closing_phrase"]
+      none_flags: ["business_phrase"]
+      action: "closing_ack"
+    - all_flags: ["not_greeted", "no_assistant_history", "greeting_query"]
+      action: "greeting_once"
+    - all_flags: ["manager_phone_prompt", "phone_like_input", "phone_digits_eq_11"]
+      action: "human_operator_phone_confirm"
+    - all_flags: ["manager_phone_prompt", "phone_like_input"]
+      none_flags: ["phone_digits_eq_11"]
+      action: "human_operator_phone_invalid"
+    - current_focus_any: ["compare_epc_tis"]
+      action: "compare_epc_tis"
+      secondary_topic: "tis_tariffs"
+    - current_focus_any: ["tis_tariffs"]
+      action: "tis_tariffs"
+    - current_focus_any: ["epc_tariffs"]
+      action: "epc_tariffs"
+    - current_focus_any: ["macos_support"]
+      action: "macos_support"
+    - current_focus_any: ["company_services_documents"]
+      action: "company_services_documents"
+    - current_focus_any: ["parts_selection_not_supported"]
+      action: "parts_selection_not_supported"
+    - current_focus_any: ["out_of_scope_response"]
+      action: "out_of_scope_response"
+    - current_focus_any: ["brand_availability"]
+      action: "brand_availability"
+    - current_focus_any: ["demo_policy"]
+      action: "demo_policy"
+    - current_focus_any: ["post_payment_no_access"]
+      action: "post_payment_no_access_handoff"
+    - current_focus_any: ["post_payment_access_timing"]
+      action: "post_payment_access_info"
+    - current_focus_any: ["usage_limits"]
+      action: "usage_limits_info"
+    - current_focus_any: ["multi_device_access"]
+      action: "multi_device_access_info"
+    - current_focus_any: ["manager_setup_support"]
+      action: "manager_setup_support_info"
+    - current_focus_any: ["payment_flow"]
+      action: "request_requisites"
+    - current_focus_any: ["company_services"]
+      action: "company_services"
+    - all_flags: ["out_of_scope_query"]
+      action: "out_of_scope_response"
+    - topic_all: ["nonsense_input"]
+      all_flags: ["deescalation_query"]
+      action: "clarify_request"
+    - all_flags: ["docs_query"]
+      action: "company_services_documents"
+    - all_flags: ["services_overview_without_checkout"]
+      action: "company_services"
+    - all_flags: ["parts_query"]
+      action: "parts_selection_not_supported"
+    - all_flags: ["manager_query_or_topic_human", "manager_request_hits_ge_2"]
+      action: "human_operator_collect_phone"
+    - all_flags: ["manager_query_or_topic_human"]
+      action: "human_operator"
+    - topic_all: ["api_integration", "purchase_ready"]
+      action: "api_then_purchase"
+      secondary_topic: "purchase_ready"
+    - topic_any: ["api_integration"]
+      action: "api_unavailable"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["api_fallback_purchase"]
+      action: "request_requisites"
+    - all_flags: ["checkout_intent", "legal_context_confirmed"]
+      action: "request_requisites"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["checkout_intent"]
+      action: "ask_legal_status"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["legal_context_confirmed"]
+      action: "request_requisites"
+    - topic_any: ["purchase_ready"]
+      action: "ask_legal_status"
+
+  topic_action_rules:
+    - required_topics_all: ["no_private_sales_reason", "physical_person_purchase"]
+      action: "physical_reject_reason"
+      secondary_topic: "no_private_sales_reason"
+    - required_topics_any: ["no_private_sales_reason"]
+      action: "physical_reject_reason"
+    - required_topics_any: ["physical_person_purchase"]
+      action: "physical_reject"
+    - required_topics_any: ["macos_support"]
+      action: "macos_support"
+    - required_topics_any: ["partial_catalog_request"]
+      action: "partial_catalog_restriction"
+    - required_topics_any: ["demo_access"]
+      action: "demo_policy"
+    - required_topics_any: ["payment_without_details", "legal_entity_purchase_flow"]
+      action: "request_requisites"
+    - required_topics_any: ["epc_tariffs"]
+      action: "epc_tariffs"
+    - required_topics_any: ["tis_tariffs"]
+      action: "tis_tariffs"
+    - required_topics_any: ["specific_brand_check", "brand_list_request"]
+      action: "brand_availability"
+    - required_topics_any: ["competitor_choice", "price_objection"]
+      action: "price_objection"
+    - required_topics_any: ["company_services_info"]
+      action: "company_services"
+    - required_topics_any: ["free_catalog_comparison"]
+      action: "free_catalog_comparison"
+    - required_topics_any: ["post_payment_no_access"]
+      action: "post_payment_no_access_handoff"
+    - required_topics_any: ["post_payment_access_timing"]
+      action: "post_payment_access_info"
+    - required_topics_any: ["usage_limits"]
+      action: "usage_limits_info"
+    - required_topics_any: ["multi_device_access"]
+      action: "multi_device_access_info"
+    - required_topics_any: ["manager_setup_support"]
+      action: "manager_setup_support_info"
+
+builder:
+  prefer_templates_actions: []
+
+templates: {}
+
+anti_repeat:
+  variants:
+    company_services:
+      - "Могу помочь по каталогам EPC и TIS: подскажу стоимость, наличие нужных брендов и порядок подключения доступа."
+      - "Помогу по автокаталогам: проверим бренды, сравним EPC/TIS и выберем подходящий формат работы."
+      - "По каталогам подскажу кратко и по делу: цены, бренды, документы и порядок оформления для юрлиц и ИП."
+    company_services_documents:
+      - "По договору и карточке компании помогу. Уточните, какой документ нужен первым: договор или карточка предприятия."
+      - "Могу сориентировать по документам компании: договор и карточка доступны по запросу, что отправить в приоритете?"
+      - "Помогу именно по документам: договор, карточка предприятия или оба документа — как удобнее начать?"
+    out_of_scope_response:
+      - "Этот запрос не про автокаталоги. Мы работаем с автокаталогами (EPC/TIS) для автобизнеса."
+      - "Похоже, запрос вне профиля: мы помогаем по автокаталогам и техинформации для автобизнеса."
+      - "По этому запросу не подскажу: сервис предназначен для автокаталогов. Если вопрос по автокаталогам, помогу сразу."
+    clarify_request:
+      - "Чтобы не повторяться, уточните, пожалуйста: вам важнее цены, бренды, документы или оформление доступа?"
+      - "Давайте сузим запрос: интересуют тарифы, список брендов, документы компании или подключение доступа?"
+  meta_followup_pattern: "^\\s*(а\\s+)?(подскажи|подробнее|короче|еще|ещ[её]|еще короче|ещ[её]\\s+короче|повтори)\\s*$"
+
+contracts:
+  ask_legal_status: ["юрид"]
+  request_requisites: ["инн", "телефон", "имя", "период", "количество"]
+  physical_reject: ["частн", "юрид"]
+  physical_reject_reason: ["физ", "юрид"]
+  api_unavailable: ["api"]
+  api_then_purchase: ["api", "инн"]
+  demo_policy: ["демо"]
+  partial_catalog_restriction: ["отдельн", "бренд"]
+  macos_support: ["mac"]
+  epc_tariffs: ["6500"]
+  compare_epc_tis: ["epc", "tis", "отдель"]
+  tis_tariffs: ["tis"]
+  brand_availability: ["каталог"]
+  greeting_once: ["здрав", "юрид"]
+  human_operator: ["менеджер"]
+  human_operator_collect_phone: ["номер", "менеджер"]
+  human_operator_phone_invalid: ["11", "цифр"]
+  human_operator_phone_confirm: ["менеджер", "свяжется"]
+  parts_selection_not_supported: ["подбор", "каталог"]
+  price_objection: ["vin"]
+  company_services: ["каталог"]
+  company_services_documents: ["договор"]
+  out_of_scope_response: ["автокаталог"]
+  free_catalog_comparison: ["бесплат"]
+  closing_ack: ["спасибо"]
+  post_payment_no_access_handoff: ["телефон", "менеджер"]
+  post_payment_access_info: ["после", "оплат", "сразу"]
+  usage_limits_info: ["огранич"]
+  multi_device_access_info: ["разных", "компьютер"]
+  manager_setup_support_info: ["менеджер", "настройк"]
+
+
+===== src/config/facts.yaml =====
+facts:
+  - fact_id: "legal_only_policy"
+    topic: "purchase_ready"
+    subtopic: "legal_gate"
+    entity_type: "policy"
+    entity: "legal_only"
+    text: "Мы работаем только с юридическими лицами и ИП. Подскажите, пожалуйста, вы представитель юридического лица?"
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["хочу купить доступ", "купить доступ", "оформить доступ"]
+    action_tags: ["ask_legal_status"]
+
+  - fact_id: "purchase_required_data"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "business_checkout"
+    entity_type: "action"
+    entity: "request_requisites"
+    text: "Для оформления доступа, пожалуйста, пришлите ИНН вашей компании, телефон, имя контактного лица, желаемый период и количество доступов. Также уточните способ оплаты: выставить счет или оплатить по QR."
+    fact_type: "knowledge"
+    section_tag: "checkout_steps"
+    priority: 10
+    aliases: ["как купить", "как оформить", "оформляйте", "хочу купить", "купить", "какие данные", "оплата"]
+    action_tags: ["request_requisites"]
+
+  - fact_id: "api_then_purchase_flow"
+    topic: "api_integration"
+    subtopic: "fallback_purchase"
+    entity_type: "script"
+    entity: "api_then_purchase"
+    text: "Интеграция по API сейчас не поддерживается. Если оформляем обычный доступ, пришлите ИНН, телефон, имя, период и количество доступов; оплата возможна по счету или по QR."
+    fact_type: "knowledge"
+    section_tag: "integration"
+    priority: 11
+    aliases: ["api нет и как купить", "без api как оформить", "тогда оформить доступ", "api then buy"]
+    action_tags: ["api_then_purchase"]
+
+  - fact_id: "api_not_available"
+    topic: "api_integration"
+    subtopic: "limitations"
+    entity_type: "policy"
+    entity: "api"
+    text: "На текущий момент интеграция по API в сторонние системы (включая 1С) не поддерживается. Доступ предоставляется через наш сервис."
+    fact_type: "knowledge"
+    section_tag: "integration"
+    priority: 10
+    aliases: ["api", "1с", "интеграция", "integration"]
+    action_tags: ["api_unavailable"]
+
+  - fact_id: "demo_policy"
+    topic: "demo_access"
+    subtopic: "eligibility"
+    entity_type: "policy"
+    entity: "demo"
+    text: "Демо-доступ возможен для юридических лиц и ИП. Подтвердите, пожалуйста, ваш юридический статус, и я продолжу оформление."
+    fact_type: "knowledge"
+    section_tag: "demo"
+    priority: 9
+    aliases: ["демо", "demo", "trial", "демо доступ"]
+    action_tags: ["demo_policy"]
+
+  - fact_id: "physical_reject"
+    topic: "physical_person_purchase"
+    subtopic: "restrictions"
+    entity_type: "policy"
+    entity: "physical"
+    text: "К сожалению, доступ частным лицам мы не продаем. Работаем только с юридическими лицами и ИП."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["я физлицо", "физлицо", "частное лицо", "я не ип", "хочу купить как физик", "а если физлицо"]
+    action_tags: ["physical_reject"]
+
+  - fact_id: "physical_reject_reason"
+    topic: "no_private_sales_reason"
+    subtopic: "restrictions_reason"
+    entity_type: "policy"
+    entity: "physical_reason"
+    text: "Мы не продаем доступ физическим лицам, потому что сервис ориентирован на профессиональный автобизнес. Работаем только с юридическими лицами и ИП."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["почему не физлицам", "почему не продаете физическим лицам", "причина отказа физлицу"]
+    action_tags: ["physical_reject_reason"]
+
+  - fact_id: "macos_support"
+    topic: "macos_support"
+    subtopic: "platform"
+    entity_type: "support"
+    entity: "macos"
+    text: "На macOS отдельного приложения нет, работа выполняется через браузер. Функциональность каталога при этом сохраняется."
+    fact_type: "knowledge"
+    section_tag: "platform"
+    priority: 9
+    aliases: ["мак", "mac", "macos", "на маке", "на mac"]
+    action_tags: ["macos_support"]
+
+  - fact_id: "epc_tariffs"
+    topic: "epc_tariffs"
+    subtopic: "price"
+    entity_type: "pricing"
+    entity: "epc"
+    text: "Для EPC Full доступны тарифы на 1, 3, 6 и 12 месяцев. Если нужен точный расчет по периоду, сообщите срок, и я сразу покажу стоимость."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 9
+    aliases: ["сколько стоит epc", "epc", "на 3 месяца", "тариф epc"]
+    action_tags: ["epc_tariffs"]
+
+  - fact_id: "human_operator_reply"
+    topic: "human_operator_request"
+    subtopic: "handoff"
+    entity_type: "script"
+    entity: "human_operator"
+    text: "Я могу оперативно предоставить вам всю информацию прямо в чате. Если останутся вопросы, подключу менеджера."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 8
+    aliases: ["позовите человека", "оператор", "менеджер", "человек"]
+    action_tags: ["human_operator"]
+
+  - fact_id: "human_operator_collect_phone"
+    topic: "human_operator_request"
+    subtopic: "handoff"
+    entity_type: "script"
+    entity: "human_operator_phone"
+    text: "Чтобы передать запрос менеджеру, пожалуйста, укажите ваш номер телефона. После этого с вами свяжется наш менеджер."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 9
+    aliases: ["все равно позовите менеджера", "соедините с менеджером", "хочу менеджера"]
+    action_tags: ["human_operator_collect_phone"]
+
+  - fact_id: "human_operator_phone_invalid"
+    topic: "human_operator_request"
+    subtopic: "handoff_phone_validation"
+    entity_type: "script"
+    entity: "human_operator_phone_invalid"
+    text: "Пожалуйста, укажите корректный номер телефона: должно быть 11 цифр."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 10
+    aliases: ["телефон", "номер", "контакт"]
+    action_tags: ["human_operator_phone_invalid"]
+
+  - fact_id: "human_operator_phone_confirm"
+    topic: "human_operator_request"
+    subtopic: "handoff_phone_validation"
+    entity_type: "script"
+    entity: "human_operator_phone_confirm"
+    text: "Спасибо! Номер принят. Наш менеджер свяжется с вами в ближайшее время."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 10
+    aliases: ["телефон", "номер", "контакт"]
+    action_tags: ["human_operator_phone_confirm"]
+
+  - fact_id: "human_operator_conflict_or_abuse"
+    topic: "human_operator_request"
+    subtopic: "conflict_or_abuse"
+    entity_type: "script"
+    entity: "human_operator_conflict"
+    text: "Если клиент резко недоволен, обвиняет компанию или конфликтует с ботом, нужно отвечать спокойно, не спорить и предложить передать обращение менеджеру."
+    fact_type: "knowledge"
+    section_tag: "handoff"
+    priority: 11
+    aliases: ["вы мошенники", "ты тупишь", "развод", "обман", "жалоба"]
+    action_tags: ["human_operator"]
+
+  - fact_id: "parts_selection_not_supported"
+    topic: "company_services_info"
+    subtopic: "limitations"
+    entity_type: "policy"
+    entity: "parts_selection"
+    text: "Подбор деталей выполняется через наши каталоги. Чат-бот не подбирает запчасти напрямую, но подскажу, какой каталог лучше использовать."
+    fact_type: "knowledge"
+    section_tag: "limitations"
+    priority: 9
+    aliases: ["подбери деталь", "подберите запчасть", "номер детали", "артикул"]
+    action_tags: ["parts_selection_not_supported"]
+
+  - fact_id: "company_services_general"
+    topic: "company_services_info"
+    subtopic: "capabilities"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Могу рассказать, как сервис помогает в работе автобизнеса, какие задачи решает, какие есть общие возможности системы и в каких сценариях она обычно используется."
+    fact_type: "knowledge"
+    section_tag: "services"
+    priority: 11
+    aliases: ["чем ты можешь помочь", "что ты умеешь", "подскажи", "возможности", "расскажите о компании и услугах", "что умеет система", "как работает сервис"]
+    action_tags: ["company_services"]
+
+  - fact_id: "company_services_competitor_discount"
+    topic: "company_services_info"
+    subtopic: "value"
+    entity_type: "script"
+    entity: "company_services"
+    text: "К ключевым преимуществам сервиса относятся актуальные данные, стабильная работа и поддержка рабочих сценариев автобизнеса."
+    fact_type: "knowledge"
+    section_tag: "value"
+    priority: 11
+    aliases: ["чем лучше конкурентов", "почему вы лучше", "скидки", "заинтересовать как клиента"]
+    action_tags: ["company_services"]
+
+  - fact_id: "company_services_cons"
+    topic: "company_services_info"
+    subtopic: "limitations"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Если говорить честно, у сервиса есть рамки использования: он рассчитан на рабочие задачи автобизнеса, а часть сценариев требует стандартного процесса оформления."
+    fact_type: "knowledge"
+    section_tag: "limitations"
+    priority: 10
+    aliases: ["какие минусы", "какие ограничения", "что неудобно", "минусы сервиса"]
+    action_tags: ["company_services"]
+
+  - fact_id: "company_services_documents"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "documents"
+    entity_type: "script"
+    entity: "company_services"
+    text: "Можем передать запрос на договор и карточку предприятия. Пришлите контактные данные, и менеджер направит документы."
+    fact_type: "knowledge"
+    section_tag: "documents"
+    priority: 10
+    aliases: ["договор", "карточка предприятия", "карточка компании", "документы компании"]
+    action_tags: ["company_services_documents"]
+
+  - fact_id: "partial_catalog_restriction"
+    topic: "partial_catalog_request"
+    subtopic: "availability_policy"
+    entity_type: "policy"
+    entity: "partial_catalog"
+    text: "К сожалению, каталоги на отдельные бренды не продаются: доступ предоставляется только полным пакетом. Отдельно можно подключить только TIS по нужным брендам."
+    fact_type: "knowledge"
+    section_tag: "policy"
+    priority: 10
+    aliases: ["только один бренд", "один бренд", "отдельные каталоги", "только один каталог"]
+    action_tags: ["partial_catalog_restriction"]
+
+  - fact_id: "demo_legal_followup"
+    topic: "demo_access"
+    subtopic: "followup"
+    entity_type: "script"
+    entity: "demo_confirmation"
+    text: "Отлично, для юридических лиц и ИП демо-доступ доступен. Если хотите, сразу подскажу условия и затем перейдем к оформлению."
+    fact_type: "knowledge"
+    section_tag: "demo"
+    priority: 9
+    aliases: ["да, мы юрлицо", "мы ип", "мы юридическое лицо", "являемся ип"]
+    action_tags: ["demo_policy"]
+
+  - fact_id: "brand_availability_general"
+    topic: "brand_list_request"
+    subtopic: "coverage"
+    entity_type: "catalog"
+    entity: "brands"
+    text: "Да, у нас есть каталоги по широкому списку брендов. Уточните интересующую марку, и сразу подскажу наличие и дальнейшие шаги."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 9
+    aliases: ["какие каталоги есть", "какие бренды есть", "список брендов", "какие марки"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "brand_availability_specific"
+    topic: "specific_brand_check"
+    subtopic: "brand_presence"
+    entity_type: "catalog"
+    entity: "brand_check"
+    text: "Да, проверю наличие по конкретной марке. Напишите бренд, и сразу подтвержу доступность каталога и подскажу следующий шаг."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 10
+    aliases: ["есть ли бренд", "есть ли каталог по марке", "наличие бренда", "конкретный бренд"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "compare_epc_tis_core"
+    topic: "free_catalog_comparison"
+    subtopic: "difference"
+    entity_type: "comparison"
+    entity: "epc_tis"
+    text: "EPC Full — каталог запчастей по всем брендам и видам техники с единым тарифом. TIS — отдельные технические базы и сервисные модули (схемы, инструкции, сервисные данные), они подключаются отдельно по брендам."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 10
+    aliases: ["чем отличается epc от tis", "разница epc и tis", "сравнить epc tis"]
+    action_tags: ["compare_epc_tis"]
+
+  - fact_id: "product_relation_epc_tis_core"
+    topic: "product_relation_or_difference"
+    subtopic: "epc_tis_relation"
+    entity_type: "comparison"
+    entity: "epc_tis"
+    text: "EPC Full — каталог запчастей по всем брендам и видам техники с единым тарифом. TIS — отдельные технические базы и сервисные модули: схемы, инструкции, сервисные данные. TIS не входит в EPC Full и подключается отдельно по брендам."
+    fact_type: "knowledge"
+    section_tag: "product_relation"
+    priority: 10
+    aliases:
+      - "чем отличается epc от tis"
+      - "разница epc и tis"
+      - "epc входит в tis"
+      - "tis входит в epc"
+      - "epc отдельно от tis"
+      - "tis отдельно покупается"
+      - "epc full включает tis"
+    action_tags: ["compare_epc_tis"]
+
+  - fact_id: "price_objection_vin_note"
+    topic: "price_objection"
+    subtopic: "value"
+    entity_type: "policy"
+    entity: "vin_objection"
+    text: "Понимаю вопрос по стоимости. Мы даем не только проверку VIN, но и доступ к профессиональным каталогам EPC/TIS с актуальными данными для работы по запчастям и сервису."
+    fact_type: "knowledge"
+    section_tag: "objection"
+    priority: 8
+    aliases: ["дорого", "почему так дорого", "есть дешевле", "vin проверка"]
+    action_tags: ["price_objection"]
+
+  - fact_id: "tis_tariffs_brand_required"
+    topic: "tis_tariffs"
+    subtopic: "pricing"
+    entity_type: "pricing"
+    entity: "tis"
+    text: "По TIS стоимость зависит от бренда. Напишите интересующие бренды, и я сразу посчитаю итоговую сумму."
+    fact_type: "knowledge"
+    section_tag: "pricing"
+    priority: 9
+    aliases: ["сколько стоит tis", "цена tis", "тариф tis"]
+    action_tags: ["tis_tariffs"]
+
+  - fact_id: "free_catalog_comparison_policy"
+    topic: "free_catalog_comparison"
+    subtopic: "free_vs_paid"
+    entity_type: "policy"
+    entity: "free_catalogs"
+    text: "Бесплатные каталоги обычно ограничены по полноте и актуальности. Коммерческий доступ дает более полные данные, стабильный доступ и поддержку рабочих сценариев."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 8
+    aliases: ["бесплатные каталоги", "чем платный лучше бесплатного", "стоит ли платить за каталог"]
+    action_tags: ["free_catalog_comparison"]
+
+  - fact_id: "post_payment_no_access_handoff"
+    topic: "post_payment_no_access"
+    subtopic: "support_handoff"
+    entity_type: "support"
+    entity: "payment_issue"
+    text: "Если оплата уже прошла, но доступ не открылся, пожалуйста, пришлите номер телефона. Наш менеджер проверит статус оплаты и свяжется с вами."
+    fact_type: "knowledge"
+    section_tag: "support"
+    priority: 12
+    aliases: ["оплатили но нет доступа", "после оплаты не пускает", "доступ после оплаты не работает"]
+    action_tags: ["post_payment_no_access_handoff"]
+
+  - fact_id: "post_payment_access_timing"
+    topic: "post_payment_access_timing"
+    subtopic: "activation_time"
+    entity_type: "policy"
+    entity: "payment_activation"
+    text: "Доступ к каталогам предоставляется практически сразу после того, как компания видит оплату."
+    fact_type: "knowledge"
+    section_tag: "payment_timing"
+    priority: 11
+    aliases: ["когда откроется доступ после оплаты", "доступ после оплаты сразу", "как быстро активируется"]
+    action_tags: ["post_payment_access_info"]
+
+  - fact_id: "payment_without_details_policy"
+    topic: "payment_without_details"
+    subtopic: "required_requisites"
+    entity_type: "policy"
+    entity: "payment_requisites"
+    text: "По регламенту для оплаты и выставления счета нужны реквизиты компании: название, ИНН и город. Без этих данных оплату оформить нельзя."
+    fact_type: "knowledge"
+    section_tag: "checkout_steps"
+    priority: 11
+    aliases: ["инн не дам", "без реквизитов", "без инн", "не скажу город", "можно оплатить без данных"]
+    action_tags: ["payment_without_details_info"]
+
+  - fact_id: "usage_limits_no_restrictions"
+    topic: "company_services_info"
+    subtopic: "query_limits"
+    entity_type: "policy"
+    entity: "limits"
+    text: "Ограничений по количеству пользовательских запросов нет."
+    fact_type: "knowledge"
+    section_tag: "usage_limits"
+    priority: 10
+    aliases: ["есть лимит запросов", "сколько запросов можно", "безлимитно ли"]
+    action_tags: ["usage_limits_info"]
+
+  - fact_id: "multi_device_access_policy"
+    topic: "company_services_info"
+    subtopic: "device_policy"
+    entity_type: "policy"
+    entity: "multi_device"
+    text: "Пользоваться сервисом можно с разных компьютеров."
+    fact_type: "knowledge"
+    section_tag: "access_policy"
+    priority: 10
+    aliases: ["можно с разных компьютеров", "можно с другого пк", "несколько компьютеров"]
+    action_tags: ["multi_device_access_info"]
+
+  - fact_id: "multi_user_access_policy"
+    topic: "company_services_info"
+    subtopic: "multi_user"
+    entity_type: "policy"
+    entity: "multi_user"
+    text: "Если доступ нужен нескольким сотрудникам, это можно обсудить при оформлении: подскажем по количеству доступов и подходящему сценарию подключения."
+    fact_type: "knowledge"
+    section_tag: "access_policy"
+    priority: 10
+    aliases: ["можно ли пользоваться нескольким людям", "несколько сотрудников", "несколько пользователей", "сколько доступов нужно", "нескольким людям"]
+    action_tags: ["multi_device_access_info"]
+
+  - fact_id: "company_documents_contact_followup"
+    topic: "legal_entity_purchase_flow"
+    subtopic: "documents_followup"
+    entity_type: "script"
+    entity: "company_documents_followup"
+    text: "Спасибо, контактные данные для документов приняты. Менеджер направит договор и карточку предприятия или при необходимости уточнит недостающие данные."
+    fact_type: "knowledge"
+    section_tag: "documents"
+    priority: 11
+    aliases: ["инн", "телефон", "контакт", "карточка предприятия", "договор"]
+    action_tags: ["company_services_documents"]
+
+  - fact_id: "post_payment_refund_policy"
+    topic: "post_payment_no_access"
+    subtopic: "refund"
+    entity_type: "support"
+    entity: "refund_policy"
+    text: "Если нужно разобраться с возвратом после оплаты или с ситуацией, когда доступ не подошел, лучше передать вопрос менеджеру: он проверит детали оплаты и подскажет дальнейшие шаги."
+    fact_type: "knowledge"
+    section_tag: "support"
+    priority: 11
+    aliases: ["можно вернуть деньги", "возврат денег", "если не подошло", "как вернуть деньги", "refund"]
+    action_tags: ["post_payment_no_access_handoff"]
+
+  - fact_id: "manager_setup_support_info"
+    topic: "manager_setup_support"
+    subtopic: "onboarding"
+    entity_type: "support"
+    entity: "manager_setup"
+    text: "Менеджер по продажам консультирует по настройке и работе с приложением, если появляются вопросы. Обычно вопросов возникает минимум."
+    fact_type: "knowledge"
+    section_tag: "onboarding_support"
+    priority: 10
+    aliases: ["кто поможет с настройкой", "консультация по настройке", "вопросы по приложению"]
+    action_tags: ["manager_setup_support_info"]
+
+  - fact_id: "competitor_choice_retention"
+    topic: "competitor_choice"
+    subtopic: "retention"
+    entity_type: "value"
+    entity: "competitor"
+    text: "Экономия на более дешевом доступе часто оборачивается потерями из-за неполных данных. Клиенты нередко возвращаются к нам именно из-за стабильного VIN-подбора."
+    fact_type: "knowledge"
+    section_tag: "objection"
+    priority: 9
+    aliases: ["уйду к конкуренту", "выберу дешевле", "дешевый конкурент"]
+    action_tags: ["price_objection"]
+
+  - fact_id: "data_accuracy_assurance"
+    topic: "data_accuracy_doubt"
+    subtopic: "accuracy"
+    entity_type: "quality"
+    entity: "accuracy"
+    text: "Данные наших каталогов регулярно обновляются, OEM-номера и замены поддерживаются в актуальном состоянии. Это снижает риск ошибок в подборе."
+    fact_type: "knowledge"
+    section_tag: "quality"
+    priority: 9
+    aliases: ["точность данных", "ошибки в каталоге", "актуальность номеров"]
+    action_tags: ["company_services"]
+
+  - fact_id: "free_catalogs_detailed_gap"
+    topic: "free_catalog_comparison"
+    subtopic: "coverage_gap"
+    entity_type: "comparison"
+    entity: "free_catalogs"
+    text: "Бесплатные каталоги часто обновляются нерегулярно и не покрывают часть VIN по брендам, особенно в китайском, грузовом и спецсегменте."
+    fact_type: "knowledge"
+    section_tag: "catalog_comparison"
+    priority: 9
+    aliases: ["чем хуже бесплатные", "бесплатные каталоги устарели", "у поставщиков не все vin"]
+    action_tags: ["free_catalog_comparison"]
+
+  - fact_id: "brand_list_extended"
+    topic: "brand_list_request"
+    subtopic: "coverage_list"
+    entity_type: "catalog"
+    entity: "brands"
+    text: "Покрытие включает легковые, грузовые, спецтехнику и мототехнику: например BMW, Mercedes-Benz, Audi, Volkswagen, Toyota, Lexus, Volvo, Zeekr, Lada, УАЗ и многие другие."
+    fact_type: "knowledge"
+    section_tag: "brand_coverage"
+    priority: 8
+    aliases: ["перечень брендов", "какие марки в каталоге", "список марок"]
+    action_tags: ["brand_availability"]
+
+  - fact_id: "clarify_request_service"
+    topic: "nonsense_input"
+    subtopic: "clarify"
+    entity_type: "service"
+    entity: "clarify"
+    text: "Уточните, пожалуйста, что именно вас интересует: каталоги EPC, TIS, проверка бренда, оформление доступа или вопрос по оплате."
+    fact_type: "knowledge"
+    section_tag: "clarify"
+    priority: 6
+    aliases: ["уточнить запрос", "не понял", "повтори кратко"]
+    action_tags: ["clarify_request"]
+
+  - fact_id: "closing_ack_service"
+    topic: "nonsense_input"
+    subtopic: "closing"
+    entity_type: "service"
+    entity: "closing"
+    text: "Понял, спасибо за обращение. Если понадобится, помогу в любой момент."
+    fact_type: "knowledge"
+    section_tag: "closing"
+    priority: 6
+    aliases: ["спасибо", "понял", "до связи"]
+    action_tags: ["closing_ack"]
+
+  - fact_id: "greeting_once_service"
+    topic: "nonsense_input"
+    subtopic: "greeting"
+    entity_type: "service"
+    entity: "greeting"
+    text: "Здравствуйте! Чем могу помочь?"
+    fact_type: "knowledge"
+    section_tag: "greeting"
+    priority: 6
+    aliases: ["привет", "здравствуйте", "добрый день"]
+    action_tags: ["greeting_once"]
+
+  - fact_id: "out_of_scope_service"
+    topic: "out_of_scope_request"
+    subtopic: "out_of_scope"
+    entity_type: "service"
+    entity: "out_of_scope"
+    text: "Этот запрос не про автокаталоги. Мы работаем с каталогами автозапчастей и техинформацией для автобизнеса."
+    fact_type: "knowledge"
+    section_tag: "out_of_scope"
+    priority: 7
+    aliases: ["велосипед", "самокат", "космический корабль", "не по теме"]
+    action_tags: ["out_of_scope_response"]
+
+
+===== src/config/prices.yaml =====
+epc_prices:
+  1_month: 6500
+  3_months: 18000
+  6_months: 34800
+  12_months: 62400
+
+tis_prices:
+  audi: 6000
+  autotech: 1000
+  bmw: 5000
+  daf: 15000
+  fiat: 2000
+  gac: 2000
+  honda: 3000
+  hyundai: 2000
+  infiniti: 2000
+  kia: 2000
+  jaguar: 6000
+  land rover: 6000
+  mercedes-benz: 10000
+  nissan: 2000
+  opel: 3000
+  peugeot: 3000
+  citroen: 3000
+  porsche: 15000
+  renault: 4000
+  skoda: 6000
+  toyota: 5000
+  lexus: 5000
+  volkswagen: 6000
+  volvo: 10000
+  zeekr: 6000
+  lada: 2500
+  bobcat: 6000
+
+
+===== src/domain/pricing/price_catalog.py =====
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+
+class PriceCatalog:
+    def __init__(self, prices_file_path: Path) -> None:
+        raw = self._load_yaml(prices_file_path)
+        self._epc_prices = self._load_epc_prices(raw)
+        self._tis_prices = self._load_tis_prices(raw)
+        self._display_names = {
+            "mercedes-benz": "Mercedes",
+            "land rover": "Land Rover",
+            "zeekr": "Zeekr",
+            "lada": "Lada",
+            "bobcat": "Bobcat",
+        }
+
+    @staticmethod
+    def _load_yaml(prices_file_path: Path) -> dict[str, object]:
+        if not prices_file_path.exists():
+            return {}
+        raw = yaml.safe_load(prices_file_path.read_text(encoding="utf-8")) or {}
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _load_epc_prices(raw: dict[str, object]) -> dict[str, int]:
+        epc_raw = raw.get("epc_prices", {})
+        if not isinstance(epc_raw, dict):
+            return {}
+        prices: dict[str, int] = {}
+        for key, value in epc_raw.items():
+            name = str(key).strip().lower()
+            if not name:
+                continue
+            try:
+                prices[name] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return prices
+
+    @staticmethod
+    def _load_tis_prices(raw: dict[str, object]) -> dict[str, int]:
+        tis_raw = raw.get("tis_prices", {})
+        if not isinstance(tis_raw, dict):
+            return {}
+        prices: dict[str, int] = {}
+        for key, value in tis_raw.items():
+            name = str(key).strip().lower()
+            if not name:
+                continue
+            try:
+                prices[name] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return prices
+
+    def has_epc_period(self, period_key: str) -> bool:
+        return str(period_key).strip().lower() in self._epc_prices
+
+    def epc_price_for(self, period_key: str) -> int:
+        return self._epc_prices[str(period_key).strip().lower()]
+
+    def epc_prices(self) -> dict[str, int]:
+        return dict(self._epc_prices)
+
+    def has_tis_price(self, canonical_brand: str) -> bool:
+        return str(canonical_brand).strip().lower() in self._tis_prices
+
+    def tis_price_for(self, canonical_brand: str) -> int:
+        return self._tis_prices[str(canonical_brand).strip().lower()]
+
+    def tis_prices(self) -> dict[str, int]:
+        return dict(self._tis_prices)
+
+    def display_name(self, canonical_brand: str) -> str:
+        key = str(canonical_brand).strip().lower()
+        if key in self._display_names:
+            return self._display_names[key]
+        return key.title()
+
+

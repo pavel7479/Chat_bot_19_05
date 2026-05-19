@@ -1,0 +1,602 @@
+СХЕМА ПРОЕКТА Chat_bot
+
+1. Общая идея
+Проект устроен как многошаговый чат-бот для продаж и поддержки каталогов/подписок.
+Он не отвечает одним куском "из модели", а проходит через несколько слоёв:
+- понимает смысл реплики
+- определяет тему и сценарий
+- собирает факты и цены
+- строит детерминированный ответ
+- при необходимости сверяет LLM-ответ с правилами
+- обновляет состояние диалога
+- пишет подробную телеметрию
+
+2. Верхний уровень проекта
+- config.yaml
+  Главный конфиг приложения: провайдер LLM, пути к prompt/yaml-файлам, retrieval, логирование, API.
+
+- prompts/
+  Prompt-файлы для генерации ответа и связанных задач.
+
+- knowledge_base/
+  Сырая база знаний в текстовом виде.
+
+- logs/
+  Технические логи бота, тестов и разборов диалогов.
+
+- src/
+  Основной код приложения.
+
+- the_First_Agent/
+  Логика первого агента: Agent Zero, shortlist, topic classifier, follow-up, context signals.
+
+- tests/
+  Автотесты, снапшоты, служебные файлы и stage-based наборы тестов.
+
+3. Точка входа и сборка приложения
+Файл: src/main.py
+
+Ключевые функции:
+- build_app(...)
+  Собирает весь бот из компонентов.
+- create_app(...)
+  Создаёт FastAPI-приложение.
+- run_cli()
+  Запуск в терминале.
+- run_api()
+  Запуск HTTP API.
+
+Что делает build_app:
+- создаёт LLM provider
+- поднимает первый агент
+- поднимает второй агент
+- подключает retrieval
+- подключает роутер, state update, telemetry
+- собирает ChatBotOrchestrator
+
+4. Главный оркестратор
+Файл: src/app/chatbot.py
+Класс: ChatBotOrchestrator
+
+Человеческим языком:
+Это главный диспетчер всего диалога.
+Он получает сообщение пользователя и дальше координирует весь pipeline.
+
+Что делает:
+- сохраняет сообщение в историю
+- достаёт состояние сессии
+- запускает извлечение слотов
+- вызывает Agent Zero / IntentAgent
+- вызывает DialogActRouter, если нужен жёсткий маршрут
+- строит response plan
+- достаёт знания и бренды
+- собирает answer block
+- вызывает ResponseAgent для финального ответа
+- применяет post-processing и greeting policy
+- обновляет state после классификации и после ответа
+- пишет debug/telemetry
+
+5. Первый агент: понимание смысла и выбор темы
+
+5.1. IntentAgent
+Файл: src/agents/intent_agent.py
+Класс: IntentAgent
+
+Роль:
+Это координатор первого агента.
+Он не просто спрашивает модель "что хотел пользователь", а собирает вокруг этого много контекста.
+
+Что делает:
+- получает результат Agent Zero
+- строит context signals
+- считает follow-up
+- строит shortlist возможных тем
+- вызывает TopicClassifier
+- применяет SemanticCompatibilityValidator
+- кладёт semantic_frame в diagnostics и state
+
+Именно здесь сейчас живёт логика:
+- classifier path
+- dialog_act path
+- semantic compatibility stage
+
+5.2. Agent Zero
+Папка: the_First_Agent/Agent_Zero/
+
+Файлы и классы:
+- context_understanding_agent.py -> ContextUnderstandingAgent
+  Делает запрос к модели, чтобы получить gist/meaning/semantic_frame.
+
+- parser.py -> ContextUnderstandingParser
+  Разбирает ответ модели в JSON, валидирует и делает fallback.
+
+- models.py
+  Содержит Pydantic-схемы и ContextUnderstandingResult.
+
+Человеческим языком:
+Agent Zero отвечает на вопрос:
+"Что сейчас по смыслу имеет в виду пользователь?"
+Он не выбирает финальный ответ и не выбирает факт из базы знаний.
+
+5.3. TopicClassifier
+Файл: the_First_Agent/orchestrator/topic_classifier.py
+Класс: TopicClassifier
+
+Роль:
+Берёт shortlist допустимых тем и просит модель выбрать одну или две темы в нужном JSON-формате.
+
+5.4. TopicShortlistBuilder
+Файл: the_First_Agent/catalog/topic_shortlist_builder.py
+Класс: TopicShortlistBuilder
+
+Роль:
+Сужает пространство выбора перед classifier.
+Использует:
+- слова из запроса
+- смысловые сигналы
+- брендовые совпадения
+- continuity/follow-up
+
+5.5. TopicCatalog
+Файл: the_First_Agent/catalog/topic_catalog.py
+Класс: TopicCatalog
+
+Роль:
+Читает YAML с описаниями тем/intents и превращает их в удобный каталог для prompt и shortlist.
+
+5.6. ContextSignalExtractor
+Файл: the_First_Agent/context/context_signal_extractor.py
+Класс: ContextSignalExtractor
+
+Роль:
+Извлекает сигналы вроде:
+- pricing
+- purchase
+- support
+- manager
+- company_services
+по декларативным правилам из YAML.
+
+5.7. FollowupResolver
+Файл: the_First_Agent/followup/followup_resolver.py
+Класс: FollowupResolver
+
+Роль:
+Определяет, является ли текущая реплика продолжением предыдущего сценария.
+Например:
+- "да"
+- "подскажи"
+- "а остальные"
+- номер телефона после просьбы дать контакт
+
+6. Semantic compatibility
+Файл: src/intents/semantic_compatibility_validator.py
+Класс: SemanticCompatibilityValidator
+
+Роль:
+Проверяет, не конфликтует ли topic classifier с SemanticFrame.
+
+Пример:
+- SemanticFrame говорит: пользователь выбирает каталог
+- classifier говорит: tis_tariffs
+- validator может сказать: это конфликт, лучше заменить на specific_brand_check
+
+Что умеет:
+- совместимо / несовместимо
+- severity:
+  - HARD_CONFLICT
+  - SOFT_CONFLICT
+  - WARNING
+- override по shortlist
+- fallback в безопасную тему, если совместимой темы нет
+
+7. Жёсткий роутинг и сценарные переключения
+Файл: src/app/dialog_act_router.py
+Класс: DialogActRouter
+
+Роль:
+Это отдельный слой для жёстких протокольных или специальных случаев.
+Например:
+- greeting
+- nonsense
+- часть follow-up сценариев
+- некоторые сценарные jump-ы
+
+Он возвращает DialogActDecision.
+
+8. Продуктовый и бизнес-контекст
+
+8.1. ProductResolver
+Файл: src/app/product_resolver.py
+Класс: ProductResolver
+Класс-DTO: ProductContext
+
+Роль:
+Понимает продуктовый контекст запроса.
+Не "что пользователь хотел в целом", а именно:
+- спрашивает ли он про EPC/TIS
+- есть ли бренды
+- это цена или availability
+- нужен ли fallback на EPC
+
+8.2. SlotExtractionService
+Файл: src/app/slot_extraction_service.py
+Класс: SlotExtractionService
+Класс-DTO: SlotExtractionResult
+
+Роль:
+Вытаскивает структурированные данные из запроса:
+- бренды
+- ИНН
+- телефон
+- период
+- число пользователей
+- способ оплаты
+и т.п.
+
+8.3. BrandAliasResolver
+Файлы:
+- src/domain/brands/brand_alias_resolver.py -> BrandAliasResolver
+- src/app/brand_alias_resolver.py -> TurnBrandAliasResolver
+- src/domain/brand_display_resolver.py -> BrandDisplayResolver
+
+Роль:
+Работа с брендами:
+- распознать бренд по алиасу
+- отличить canonical/display/raw форму
+- подготовить брендовый контекст на ход
+
+9. Второй агент: планирование и ответ
+
+9.1. ResponsePlanner
+Файл: src/agents/response_planner.py
+Классы:
+- ResponsePlan
+- ResponsePlanner
+
+Роль:
+Превращает topic classification в конкретный план ответа.
+
+Что выбирает:
+- primary_action
+- primary_topic
+- secondary_topic
+- обязательные факты
+- обязательные price blocks
+- locked action или нет
+
+Человеческим языком:
+Это мозг второго шага: он решает не "что понял пользователь", а "какой ответный сценарий мы должны строить".
+
+9.2. ResponseAgent
+Файл: src/agents/response_agent.py
+Класс: ResponseAgent
+
+Роль:
+Запускает второй агент целиком.
+
+Что делает:
+- получает ResponsePlan
+- переводит state snapshot в ResponseState
+- вызывает AnswerSynthesisService
+- получает финальный BotResponse
+
+9.3. AnswerSynthesisService
+Файл: src/agents/response_services/pipeline_services.py
+Класс: AnswerSynthesisService
+
+Роль:
+Это центральный слой выбора финального текста ответа.
+
+Что делает:
+- строит prompt для LLM
+- собирает deterministic answer
+- при необходимости получает ответ от модели
+- проверяет action compatibility
+- проверяет mandatory meaning
+- выбирает источник финального ответа:
+  - llm
+  - deterministic
+  - fallback
+  - safe_default
+
+9.4. GroundedAnswerComposer
+Файл: src/agents/response_services/pipeline_services.py
+Класс: GroundedAnswerComposer
+
+Роль:
+Собирает ответ из уже подготовленного контекста и фактов.
+
+9.5. ResponseModelFactory
+Файл: src/agents/response_services/pipeline_services.py
+Класс: ResponseModelFactory
+
+Роль:
+Собирает финальный BotResponse из текста, action, evidence и trace.
+
+10. Подготовка контекста ответа
+
+10.1. AnswerComposer
+Файл: src/app/answer_composer.py
+Класс: AnswerComposer
+
+Роль:
+Готовит answer-ready context до генерации ответа.
+
+Что собирает:
+- факты
+- бренды
+- pricing flow
+- prepared_context
+- structured_context
+- answer_block
+
+10.2. KnowledgeRetriever
+Файл: src/app/knowledge_retriever.py
+Класс: KnowledgeRetriever
+
+Роль:
+Подтягивает факты из базы знаний по action/topic/query.
+
+10.3. FactTemplateRenderer
+Файл: src/app/fact_template_renderer.py
+Класс: FactTemplateRenderer
+
+Роль:
+Рендерит факты как готовые текстовые блоки по шаблонам.
+
+11. Цены и pricing-flow
+
+11.1. PriceProvider
+Файл: src/app/price_provider.py
+Классы:
+- PriceContext
+- PriceProvider
+
+Роль:
+Работает с ценовыми ответами.
+Собирает информацию о:
+- распознанных брендах
+- отсутствующих ценах
+- unresolved брендах
+- EPC fallback
+
+11.2. PricingFlowStateService
+Файл: src/app/pricing_flow_state_service.py
+Классы:
+- PricingFlowEvent
+- PricingFlowPatch
+- PricingFlowStateService
+
+Роль:
+Это владелец lifecycle pricing-flow.
+
+Что делает:
+- ведёт pending/processed состояние pricing-flow
+- считает derived fields
+- обновляет flow после классификации и после ответа
+
+11.3. PricingMeaningPolicy
+Файл: src/app/pricing_meaning_policy.py
+Класс: PricingMeaningPolicy
+
+Роль:
+Хранит правила того, как pricing-ответ должен сохранять смысл и не противоречить запросу.
+
+11.4. Domain pricing
+Файлы:
+- src/domain/pricing/price_catalog.py -> PriceCatalog
+- src/domain/pricing/tis_price_catalog.py -> TisPriceCatalog
+
+Роль:
+Читают и отдают цены из yaml-каталогов.
+
+12. Состояние диалога
+
+12.1. SessionState
+Файл: src/core/models.py
+Класс: SessionState
+
+Роль:
+Главный снимок состояния сессии.
+
+Что там лежит:
+- последние topic/action
+- бренды
+- контекстные gist/meaning
+- conversation_mode / user_goal
+- pricing_flow
+- semantic snapshots
+- память о сервисных ответах
+- служебные флаги
+
+12.2. StateUpdateService
+Файл: src/app/state_update_service.py
+Класс: StateUpdateService
+
+Роль:
+Обновляет состояние после двух моментов:
+- после классификации
+- после выдачи ответа
+
+Важно:
+Это место, где склеиваются generic dialog state и pricing-flow state.
+
+12.3. SessionManager
+Файл: src/session/session_manager.py
+Класс: SessionManager
+
+Роль:
+Хранит историю сообщений и SessionState по session_id.
+
+13. Телеметрия и debug
+
+13.1. TelemetryService
+Файл: src/app/telemetry_service.py
+Класс: TelemetryService
+
+Роль:
+Пишет телеметрию по каждому ходу.
+
+Что логирует:
+- topic request/response
+- agent zero trace
+- classifier routing
+- state trace
+- turn summary
+- failure events
+
+13.2. StructuredLoggerFactory
+Файл: src/logging_system/logger.py
+Классы:
+- JsonFormatter
+- StructuredLoggerFactory
+
+Роль:
+Создание JSON-логов для приложения.
+
+14. API слой
+
+Файлы:
+- src/api/factory.py -> ApiAppFactory
+- src/api/models.py -> ChatRequest, ChatResponse, HealthResponse
+- src/api/security.py -> ApiKeyValidator
+
+Роль:
+Оборачивают бот в HTTP API и защищают API-ключом.
+
+15. Retrieval слой
+
+Файлы и классы:
+- src/retrieval/fact_repository.py -> FactRepository
+  Читает факты из facts.yaml.
+
+- src/retrieval/simple_text_searcher.py -> SimpleTextSearcher
+  Простой поиск по тексту.
+
+- src/retrieval/hybrid_searcher.py -> HybridSearcher
+  Смешанный поиск по нескольким признакам.
+
+- src/retrieval/facts_hybrid_searcher.py -> FactsHybridSearcher
+  Поиск именно по фактам.
+
+- src/retrieval/reranker.py -> EvidenceReranker
+  Пересортировывает evidence.
+
+- src/retrieval/query_extension.py -> QueryExtension
+  Расширяет поисковый запрос.
+
+16. Prompting и LLM
+
+16.1. PromptManager
+Файл: src/prompting/prompt_manager.py
+Класс: PromptManager
+
+Роль:
+Строит prompt-ы для:
+- topic classifier
+- Agent Zero
+- answer generation
+
+16.2. LLM Provider
+Файлы:
+- src/llm/base.py
+- src/llm/gemma_ollama_provider.py -> GemmaOllamaProvider
+- src/llm/provider_factory.py -> LLMProviderFactory
+
+Роль:
+Абстракция над моделью и конкретная реализация для Ollama/Gemma.
+
+17. Core модели
+Файл: src/core/models.py
+
+Самые важные классы:
+- ContextSignals
+  Сигналы для первого агента.
+- SemanticFrame
+  Смысловой снимок текущего хода.
+- TopicClassificationResult
+  Результат классификации темы.
+- BotResponse
+  Финальный ответ бота.
+- PreparedResponseContext
+  Подготовленный контекст для второго агента.
+- BrandMention
+  Упоминание бренда.
+- PricingBrandItem / PricingFlowState
+  Состояние брендов и ценового flow.
+- SessionState
+  Полное состояние сессии.
+
+18. Intents/legacy дополнительные сервисы
+Папка: src/intents/
+
+Здесь лежат дополнительные или экспериментальные смысловые слои:
+- FastMatcher
+- SemanticMatcher
+- IntentRouter
+- IntentResolver
+- FSMOrchestrator
+- ModelSemanticProvider
+- QueryRewriterService
+
+Человеческим языком:
+Это набор вспомогательных инструментов для intent-логики.
+Часть из них используется активно, часть выглядит как запасной/эволюционный слой проекта.
+
+19. tests/
+
+Что важно:
+- обычные unit/integration тесты проекта
+- снапшоты
+- служебные test logs
+- testsOfBestVar/
+  Этапные наборы тестов:
+  - run_stage_01_suite.py
+  - run_stage_02_suite.py
+  - test_stage_01_semantic_frame_light.py
+  - test_stage_02_semantic_compatibility.py
+
+20. Краткая карта ответственности
+
+- ChatBotOrchestrator
+  Главный диспетчер одного хода.
+
+- Agent Zero
+  Понимание смысла реплики.
+
+- IntentAgent
+  Классификационный orchestration первого агента.
+
+- SemanticCompatibilityValidator
+  Проверка, что classifier не противоречит SemanticFrame.
+
+- DialogActRouter
+  Жёсткие сценарные/протокольные переходы.
+
+- ProductResolver
+  Продуктовый контекст: EPC/TIS/бренды/availability/pricing angle.
+
+- SlotExtractionService
+  Извлечение структурированных слотов.
+
+- ResponsePlanner
+  План ответа: action, facts, price blocks.
+
+- AnswerComposer
+  Подготовка answer-ready context.
+
+- AnswerSynthesisService
+  Выбор и проверка финального текста ответа.
+
+- StateUpdateService
+  Обновление состояния диалога.
+
+- PricingFlowStateService
+  Владелец lifecycle pricing-flow.
+
+- TelemetryService
+  Подробные debug и observability логи.
+
+21. Как проект работает в одном предложении
+Пользователь пишет сообщение -> бот понимает смысл через Agent Zero -> classifier и compatibility layer выбирают тему -> planner выбирает action -> knowledge/pricing слои собирают контекст -> второй агент формирует безопасный финальный ответ -> state и логи обновляются.

@@ -1,0 +1,130 @@
+transitions:
+  - state: "manager_handoff"
+    intent: human_operator_request
+    next_state: manager_handoff
+    planned_action: human_operator_collect_phone
+
+  - state: "checkout"
+    intent: payment_without_details
+    next_state: checkout
+    planned_action: request_requisites
+
+  - state: "checkout"
+    intent: legal_entity_purchase_flow
+    next_state: checkout
+    planned_action: request_requisites
+
+  - state: "*"
+    intent: epc_tariffs
+    next_state: pricing
+    planned_action: epc_tariffs
+
+  - state: "*"
+    intent: tis_tariffs
+    next_state: pricing
+    planned_action: tis_tariffs
+
+  - state: "*"
+    intent: brand_list_request
+    next_state: discovery
+    planned_action: brand_availability
+
+  - state: "*"
+    intent: specific_brand_check
+    next_state: discovery
+    planned_action: brand_availability
+
+  - state: "*"
+    intent: company_services_info
+    next_state: discovery
+    planned_action: company_services
+
+  - state: "*"
+    intent: demo_access
+    next_state: discovery
+    planned_action: demo_policy
+
+  - state: "*"
+    intent: purchase_ready
+    next_state: checkout
+    planned_action: ask_legal_status
+
+  - state: "*"
+    intent: legal_entity_purchase_flow
+    next_state: checkout
+    planned_action: request_requisites
+
+  - state: "*"
+    intent: payment_without_details
+    next_state: checkout
+    planned_action: request_requisites
+
+  - state: "*"
+    intent: api_integration
+    next_state: api
+    planned_action: api_unavailable
+
+  - state: "*"
+    intent: human_operator_request
+    next_state: manager_handoff
+    planned_action: human_operator
+
+  - state: "*"
+    intent: physical_person_purchase
+    next_state: eligibility
+    planned_action: physical_reject
+
+  - state: "*"
+    intent: no_private_sales_reason
+    next_state: eligibility
+    planned_action: physical_reject_reason
+
+  - state: "*"
+    intent: price_objection
+    next_state: pricing
+    planned_action: price_objection
+
+  - state: "*"
+    intent: competitor_choice
+    next_state: pricing
+    planned_action: price_objection
+
+  - state: "*"
+    intent: free_catalog_comparison
+    next_state: discovery
+    planned_action: free_catalog_comparison
+
+  - state: "*"
+    intent: macos_support
+    next_state: product_support
+    planned_action: macos_support
+
+  - state: "*"
+    intent: post_payment_access_timing
+    next_state: post_payment_support
+    planned_action: post_payment_access_info
+
+  - state: "*"
+    intent: post_payment_no_access
+    next_state: post_payment_support
+    planned_action: post_payment_no_access_handoff
+
+  - state: "*"
+    intent: usage_limits
+    next_state: usage_policy
+    planned_action: usage_limits_info
+
+  - state: "*"
+    intent: multi_device_access
+    next_state: usage_policy
+    planned_action: multi_device_access_info
+
+  - state: "*"
+    intent: manager_setup_support
+    next_state: onboarding_support
+    planned_action: manager_setup_support_info
+
+  - state: "*"
+    intent: clarify_request
+    next_state: discovery
+    planned_action: clarify_request

@@ -1,0 +1,5 @@
+intent_model:
+  enabled: true
+  top_k: 3
+  merge_mode: "model_primary"
+  purpose: "stage1_infra_only"

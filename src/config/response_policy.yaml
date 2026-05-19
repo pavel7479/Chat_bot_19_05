@@ -1,0 +1,205 @@
+selector:
+  default_action: "clarify_request"
+  allowed_actions_by_focus:
+    compare_epc_tis: ["compare_epc_tis"]
+    tis_tariffs: ["tis_tariffs"]
+    epc_tariffs: ["epc_tariffs"]
+    macos_support: ["macos_support"]
+    company_services_documents: ["company_services_documents"]
+    company_services: ["company_services"]
+    parts_selection_not_supported: ["parts_selection_not_supported"]
+    out_of_scope_response: ["out_of_scope_response"]
+    brand_availability: ["brand_availability"]
+    demo_policy: ["demo_policy"]
+    purchase_entry: ["ask_legal_status"]
+    payment_flow: ["request_requisites", "ask_legal_status"]
+    human_operator_request: ["human_operator", "human_operator_collect_phone", "human_operator_phone_invalid", "human_operator_phone_confirm"]
+    api_integration: ["api_unavailable", "api_then_purchase"]
+    post_payment_no_access: ["post_payment_no_access_handoff"]
+    post_payment_access_timing: ["post_payment_access_info"]
+    usage_limits: ["usage_limits_info"]
+    multi_device_access: ["multi_device_access_info"]
+    manager_setup_support: ["manager_setup_support_info"]
+  ordered_rules:
+    - all_flags: ["conversation_closed", "closing_phrase"]
+      none_flags: ["business_phrase"]
+      action: "closing_ack"
+    - all_flags: ["not_greeted", "no_assistant_history", "greeting_query"]
+      action: "greeting_once"
+    - all_flags: ["manager_phone_prompt", "phone_like_input", "phone_digits_eq_11"]
+      action: "human_operator_phone_confirm"
+    - all_flags: ["manager_phone_prompt", "phone_like_input"]
+      none_flags: ["phone_digits_eq_11"]
+      action: "human_operator_phone_invalid"
+    - current_focus_any: ["compare_epc_tis"]
+      action: "compare_epc_tis"
+      secondary_topic: "tis_tariffs"
+    - current_focus_any: ["tis_tariffs"]
+      action: "tis_tariffs"
+    - current_focus_any: ["epc_tariffs"]
+      action: "epc_tariffs"
+    - current_focus_any: ["macos_support"]
+      action: "macos_support"
+    - current_focus_any: ["company_services_documents"]
+      action: "company_services_documents"
+    - current_focus_any: ["parts_selection_not_supported"]
+      action: "parts_selection_not_supported"
+    - current_focus_any: ["out_of_scope_response"]
+      action: "out_of_scope_response"
+    - current_focus_any: ["brand_availability"]
+      action: "brand_availability"
+    - current_focus_any: ["demo_policy"]
+      action: "demo_policy"
+    - current_focus_any: ["post_payment_no_access"]
+      action: "post_payment_no_access_handoff"
+    - current_focus_any: ["post_payment_access_timing"]
+      action: "post_payment_access_info"
+    - current_focus_any: ["usage_limits"]
+      action: "usage_limits_info"
+    - current_focus_any: ["multi_device_access"]
+      action: "multi_device_access_info"
+    - current_focus_any: ["manager_setup_support"]
+      action: "manager_setup_support_info"
+    - current_focus_any: ["payment_flow"]
+      action: "request_requisites"
+    - current_focus_any: ["company_services"]
+      action: "company_services"
+    - all_flags: ["out_of_scope_query"]
+      action: "out_of_scope_response"
+    - topic_all: ["nonsense_input"]
+      all_flags: ["deescalation_query"]
+      action: "clarify_request"
+    - all_flags: ["docs_query"]
+      action: "company_services_documents"
+    - all_flags: ["services_overview_without_checkout"]
+      action: "company_services"
+    - all_flags: ["parts_query"]
+      action: "parts_selection_not_supported"
+    - all_flags: ["manager_query_or_topic_human", "manager_request_hits_ge_2"]
+      action: "human_operator_collect_phone"
+    - all_flags: ["manager_query_or_topic_human"]
+      action: "human_operator"
+    - topic_all: ["api_integration", "purchase_ready"]
+      action: "api_then_purchase"
+      secondary_topic: "purchase_ready"
+    - topic_any: ["api_integration"]
+      action: "api_unavailable"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["api_fallback_purchase"]
+      action: "request_requisites"
+    - all_flags: ["checkout_intent", "legal_context_confirmed"]
+      action: "request_requisites"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["checkout_intent"]
+      action: "ask_legal_status"
+    - topic_any: ["purchase_ready"]
+      all_flags: ["legal_context_confirmed"]
+      action: "request_requisites"
+    - topic_any: ["purchase_ready"]
+      action: "ask_legal_status"
+
+  topic_action_rules:
+    - required_topics_all: ["no_private_sales_reason", "physical_person_purchase"]
+      action: "physical_reject_reason"
+      secondary_topic: "no_private_sales_reason"
+    - required_topics_any: ["no_private_sales_reason"]
+      action: "physical_reject_reason"
+    - required_topics_any: ["physical_person_purchase"]
+      action: "physical_reject"
+    - required_topics_any: ["macos_support"]
+      action: "macos_support"
+    - required_topics_any: ["partial_catalog_request"]
+      action: "partial_catalog_restriction"
+    - required_topics_any: ["demo_access"]
+      action: "demo_policy"
+    - required_topics_any: ["payment_without_details", "legal_entity_purchase_flow"]
+      action: "request_requisites"
+    - required_topics_any: ["epc_tariffs"]
+      action: "epc_tariffs"
+    - required_topics_any: ["tis_tariffs"]
+      action: "tis_tariffs"
+    - required_topics_any: ["specific_brand_check", "brand_list_request"]
+      action: "brand_availability"
+    - required_topics_any: ["competitor_choice", "price_objection"]
+      action: "price_objection"
+    - required_topics_any: ["company_services_info"]
+      action: "company_services"
+    - required_topics_any: ["free_catalog_comparison"]
+      action: "free_catalog_comparison"
+    - required_topics_any: ["post_payment_no_access"]
+      action: "post_payment_no_access_handoff"
+    - required_topics_any: ["post_payment_access_timing"]
+      action: "post_payment_access_info"
+    - required_topics_any: ["usage_limits"]
+      action: "usage_limits_info"
+    - required_topics_any: ["multi_device_access"]
+      action: "multi_device_access_info"
+    - required_topics_any: ["manager_setup_support"]
+      action: "manager_setup_support_info"
+
+builder:
+  prefer_templates_actions: []
+
+templates: {}
+
+anti_repeat:
+  variants:
+    company_services:
+      - "Могу помочь по каталогам EPC и TIS: подскажу стоимость, наличие нужных брендов и порядок подключения доступа."
+      - "Помогу по автокаталогам: проверим бренды, сравним EPC/TIS и выберем подходящий формат работы."
+      - "По каталогам подскажу кратко и по делу: цены, бренды, документы и порядок оформления для юрлиц и ИП."
+    company_services_documents:
+      - "По договору и карточке компании помогу. Уточните, какой документ нужен первым: договор или карточка предприятия."
+      - "Могу сориентировать по документам компании: договор и карточка доступны по запросу, что отправить в приоритете?"
+      - "Помогу именно по документам: договор, карточка предприятия или оба документа — как удобнее начать?"
+    out_of_scope_response:
+      - "Этот запрос не про автокаталоги. Мы работаем с автокаталогами (EPC/TIS) для автобизнеса."
+      - "Похоже, запрос вне профиля: мы помогаем по автокаталогам и техинформации для автобизнеса."
+      - "По этому запросу не подскажу: сервис предназначен для автокаталогов. Если вопрос по автокаталогам, помогу сразу."
+    clarify_request:
+      - "Чтобы не повторяться, уточните, пожалуйста: вам важнее цены, бренды, документы или оформление доступа?"
+      - "Давайте сузим запрос: интересуют тарифы, список брендов, документы компании или подключение доступа?"
+  meta_followup_pattern: "^\\s*(а\\s+)?(подскажи|подробнее|короче|еще|ещ[её]|еще короче|ещ[её]\\s+короче|повтори)\\s*$"
+
+contracts:
+  ask_legal_status: ["юрид", "ип", "автобизнес"]
+  request_requisites: ["инн", "телефон", "имя", "период", "количество", "реквизит", "оформл"]
+  physical_reject: ["частн", "юрид", "физ"]
+  physical_reject_reason: ["физ", "юрид", "прода"]
+  api_unavailable: ["api", "интеграц", "настрой"]
+  api_then_purchase: ["api", "инн", "доступ", "оформл"]
+  demo_policy: ["демо", "доступ", "юр"]
+  partial_catalog_restriction: ["отдельн", "бренд", "част"]
+  macos_support: ["mac", "windows", "браузер"]
+  epc_tariffs: ["6500", "epc", "месяц", "тариф", "руб"]
+  compare_epc_tis: ["epc", "tis", "отдель", "разниц", "техническ"]
+  tis_tariffs: ["tis", "бренд", "руб", "стоим"]
+  brand_availability: ["каталог", "бренд", "марк"]
+  existing_contract_check: ["договор", "номер", "провер"]
+  manager_handoff_ready: ["менедж", "свяж", "данн"]
+  self_employed_policy: ["ип", "юрид", "самозан"]
+  subscription_renewal: ["продлен", "доступ", "менедж"]
+  payment_process: ["счет", "qr", "карт"]
+  competitor_comparison: ["актуаль", "стабил", "поддерж", "автобизнес", "полнот"]
+  brand_group_clarification: ["марк", "уточнит", "vag"]
+  unknown_brand_unavailable: ["нет", "бренд", "epc", "tis"]
+  greeting_once: ["здрав", "добрый", "помогу"]
+  human_operator: ["менеджер", "специалист", "человек", "передам", "свяж"]
+  human_operator_collect_phone: ["номер", "телефон", "свяж", "менеджер"]
+  human_operator_phone_invalid: ["11", "цифр"]
+  human_operator_phone_confirm: ["менеджер", "свяжется", "номер", "принят"]
+  parts_selection_not_supported: ["подбор", "каталог", "запчаст"]
+  price_objection: ["стоим", "цен", "данн", "каталог", "актуальн", "vin"]
+  company_services: ["сервис", "система", "каталог", "автобизнес", "возможност"]
+  company_services_documents: ["договор", "карточк", "документ"]
+  out_of_scope_response: ["автокаталог", "автобизнес", "профил"]
+  free_catalog_comparison: ["бесплат", "платн", "актуальн", "полнот", "данн"]
+  closing_ack: ["спасибо", "обращайт", "рад помочь"]
+  post_payment_no_access_handoff: ["телефон", "менеджер", "оплат", "доступ"]
+  post_payment_access_info: ["после", "оплат", "сразу", "доступ"]
+  usage_limits_info: ["огранич", "лимит", "безлимит"]
+  multi_device_access_info: ["разных", "компьютер", "устройств"]
+  manager_setup_support_info: ["менеджер", "настройк", "поможет"]
+
+contracts_all:
+  human_operator_phone_invalid: ["11", "цифр"]

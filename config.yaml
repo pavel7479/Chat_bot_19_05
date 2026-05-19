@@ -1,0 +1,45 @@
+app:
+  name: "Autopoisk Knowledge Bot"
+  session_id: "default-session"
+
+llm:
+  provider: "gemma_ollama"
+  model_name: "gemma3:27b"
+  base_url: "http://localhost:11434"
+  temperature: 0.0
+  max_tokens: 700
+  timeout: 90
+
+paths:
+  knowledge_base_path: "knowledge_base/kb.txt"
+  topics_file: "topics/topics.yaml"
+  topic_classifier_prompt: "the_First_Agent/prompts/topic_classifier_prompt.txt"
+  context_understanding_prompt: "the_First_Agent/prompts/context_understanding_prompt.txt"
+  answer_generator_prompt: "prompts/answer_generator_prompt.txt"
+  intents_config_file: "src/config/config_intents.yaml"
+  brands_file: "src/config/brands.yaml"
+  response_policy_file: "src/config/response_policy.yaml"
+  prices_file: "src/config/prices.yaml"
+  intent_model_file: "src/config/intent_model.yaml"
+
+retrieval:
+  type: "hybrid"
+  top_k: 3
+  max_context_chars: 5000
+  bm25_weight: 0.55
+  dense_weight: 0.45
+  min_evidence_score: 0.15
+  min_evidence_hits: 1
+
+session:
+  max_history_messages: 10
+
+logging:
+  level: "INFO"
+  file_path: "logs/chatbot.log"
+  console_enabled: true
+  json_format: true
+
+api:
+  host: "0.0.0.0"
+  port: 8009

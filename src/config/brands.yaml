@@ -1,0 +1,158 @@
+brands:
+  - canonical: "honda"
+    aliases: ["honda", "хонда", "хондa", "хонла", "хода"]
+  - canonical: "toyota"
+    aliases: ["toyota", "тойота", "тайота", "тоета", "тойтота"]
+  - canonical: "lexus"
+    aliases: ["lexus", "лексус", "лехус", "лекссс"]
+  - canonical: "bmw"
+    aliases: ["bmw", "бмв"]
+  - canonical: "audi"
+    aliases: ["audi", "ауди"]
+  - canonical: "mercedes-benz"
+    aliases:
+      [
+        "mercedes",
+        "mercedes-benz",
+        "mercedes benz",
+        "мерседес",
+        "мерс",
+        "мерседес-бенц",
+        "мерседес бенц",
+        "мерседесбенц",
+        "мерседес бенс",
+      ]
+  - canonical: "nissan"
+    aliases: ["nissan", "ниссан", "нисан", "ниcсан"]
+  - canonical: "infiniti"
+    aliases: ["infiniti", "инфинити", "инфинитиy"]
+  - canonical: "hyundai"
+    aliases: ["hyundai", "hyndai", "хендай", "хундай", "хюндай"]
+  - canonical: "kia"
+    aliases: ["kia", "киа", "кия", "kiaa"]
+  - canonical: "volvo"
+    aliases: ["volvo", "вольво"]
+  - canonical: "renault"
+    aliases: ["renault", "рено", "ренаульт", "renauldt"]
+  - canonical: "porsche"
+    aliases: ["porsche", "porsch", "порше", "порш"]
+  - canonical: "skoda"
+    aliases: ["skoda", "škoda", "шкода", "шкодаа"]
+  - canonical: "volkswagen"
+    aliases: ["volkswagen", "vw", "фольксваген", "фольцваген", "вольцваген", "фв", "wolksvagen"]
+  - canonical: "subaru"
+    aliases: ["subaru", "субару"]
+  - canonical: "gac"
+    aliases: ["gac", "гак"]
+  - canonical: "daf"
+    aliases: ["daf", "даф"]
+  - canonical: "opel"
+    aliases: ["opel", "опель"]
+  - canonical: "peugeot"
+    aliases: ["peugeot", "пежо", "pegeot", "пижо"]
+  - canonical: "citroen"
+    aliases: ["citroen", "citroën", "ситроен", "ситроенн"]
+  - canonical: "mazda"
+    aliases: ["mazda", "мазда"]
+  - canonical: "mitsubishi"
+    aliases: ["mitsubishi", "мицубиси", "мицубиши", "митсубиси", "mitsubishi outlander", "митсубиси аутлендер", "мицубиси аутлендер"]
+  - canonical: "suzuki"
+    aliases: ["suzuki", "сузуки"]
+  - canonical: "isuzu"
+    aliases: ["isuzu", "исузу"]
+  - canonical: "hino"
+    aliases: ["hino", "хино"]
+  - canonical: "acura"
+    aliases: ["acura", "акура"]
+  - canonical: "genesis"
+    aliases: ["genesis", "генезис"]
+  - canonical: "ssangyong"
+    aliases: ["ssangyong", "сангйонг", "ссангйонг", "санг енг", "ссангенг"]
+  - canonical: "ford"
+    aliases: ["ford", "форд"]
+  - canonical: "chevrolet"
+    aliases: ["chevrolet", "chevy", "шевроле", "шеви"]
+  - canonical: "cadillac"
+    aliases: ["cadillac", "кадиллак"]
+  - canonical: "chrysler"
+    aliases: ["chrysler", "крайслер"]
+  - canonical: "dodge"
+    aliases: ["dodge", "додж"]
+  - canonical: "jeep"
+    aliases: ["jeep", "джип"]
+  - canonical: "tesla"
+    aliases: ["tesla", "тесла"]
+  - canonical: "byd"
+    aliases: ["byd", "биду", "бид", "биды", "бидy"]
+  - canonical: "geely"
+    aliases: ["geely", "джили", "джилли", "гелли", "гели"]
+  - canonical: "chery"
+    aliases: ["chery", "чери", "чериy"]
+  - canonical: "haval"
+    aliases: ["haval", "хавал", "хавэйл", "haval dargo", "хавал дарго"]
+  - canonical: "great wall"
+    aliases: ["great wall", "грейт вол"]
+  - canonical: "zeekr"
+    aliases: ["zeekr", "zeeker", "зикр", "зикер", "зеекр", "зиккр", "zeeekr", "zee ker"]
+  - canonical: "lada"
+    aliases: ["lada", "лада", "ваз", "ваза", "автоваз", "auto vaz", "avtovaz", "autoVAZ"]
+  - canonical: "uaz"
+    aliases: ["uaz", "уаз", "уазик", "уа3", "уазз", "yaz", "u a z"]
+  - canonical: "scania"
+    aliases: ["scania", "скания"]
+  - canonical: "land rover"
+    aliases: ["land rover", "ленд ровер", "лэнд ровер"]
+  - canonical: "jaguar"
+    aliases: ["jaguar", "ягуар"]
+  - canonical: "mini"
+    aliases: ["mini", "мини"]
+  - canonical: "fiat"
+    aliases: ["fiat", "фиат"]
+  - canonical: "baic"
+    aliases: ["baic", "байк"]
+  - canonical: "changan"
+    aliases: ["changan", "чанган", "чанганг", "chnagan"]
+  - canonical: "dongfeng"
+    aliases: ["dongfeng", "донгфенг", "донфенг"]
+  - canonical: "faw"
+    aliases: ["faw", "фав"]
+  - canonical: "foton"
+    aliases: ["foton", "фотон"]
+  - canonical: "hongqi"
+    aliases: ["hongqi", "хонгчи", "гончи", "хончи", "хонджи"]
+  - canonical: "jac"
+    aliases: ["jac", "джак"]
+  - canonical: "jetour"
+    aliases: ["jetour", "джетур"]
+  - canonical: "lifan"
+    aliases: ["lifan", "лифан"]
+  - canonical: "livan"
+    aliases: ["livan", "ливан"]
+  - canonical: "mg"
+    aliases: ["mg", "эмджи"]
+  - canonical: "omoda"
+    aliases: ["omoda", "омода"]
+  - canonical: "saic"
+    aliases: ["saic", "саик"]
+  - canonical: "shacman"
+    aliases: ["shacman", "шакман", "шакмен", "шахмен", "шахман"]
+  - canonical: "shaanxi"
+    aliases: ["shaanxi", "шаанси"]
+  - canonical: "sinotruck"
+    aliases: ["sinotruck", "синотрак"]
+  - canonical: "tank"
+    aliases: ["tank", "танк"]
+  - canonical: "exeed"
+    aliases: ["exeed", "эксид"]
+  - canonical: "kaiyi"
+    aliases: ["kaiyi", "кайи"]
+  - canonical: "haima"
+    aliases: ["haima", "хайма"]
+  - canonical: "changlin"
+    aliases: ["changlin", "чанглин", "чанлин", "changlinn"]
+  - canonical: "li xiang"
+    aliases: ["li xiang", "лисян"]
+  - canonical: "jaecoo"
+    aliases: ["jaecoo", "джейку", "джэйку"]
+  - canonical: "bobcat"
+    aliases: ["bobcat", "бобкат", "бобкэт", "бабкат", "babcat", "bobkat"]

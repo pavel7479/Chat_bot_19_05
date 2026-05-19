@@ -1,0 +1,1 @@
+from .brand_alias_resolver import BrandAliasResolver

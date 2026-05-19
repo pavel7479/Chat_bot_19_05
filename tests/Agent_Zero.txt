@@ -1,0 +1,910 @@
+===== FILE: /root/project/Chat_bot/the_First_Agent/Agent_Zero/__init__.py =====
+from .context_understanding_agent import ContextUnderstandingAgent
+from .models import ContextUnderstandingResult, ContextUnderstandingSchema
+from .parser import ContextUnderstandingParser
+
+__all__ = [
+    "ContextUnderstandingAgent",
+    "ContextUnderstandingParser",
+    "ContextUnderstandingResult",
+    "ContextUnderstandingSchema",
+]
+
+===== FILE: /root/project/Chat_bot/the_First_Agent/Agent_Zero/models.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ContextUnderstandingSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gist: str = Field()
+    meaning: str = Field()
+
+
+@dataclass(slots=True)
+class ContextUnderstandingResult:
+    gist: str
+    meaning: str
+    raw_response: str
+    parsed_json: dict[str, object]
+    fallback_used: bool = False
+    fallback_reason: str = ""
+    json_extracted_from_wrapped_response: bool = False
+    schema_retry_used: bool = False
+    validation_error: str = ""
+
+===== FILE: /root/project/Chat_bot/the_First_Agent/Agent_Zero/parser.py =====
+from __future__ import annotations
+
+import json
+from json import JSONDecoder
+
+from pydantic import ValidationError
+
+from the_First_Agent.Agent_Zero.models import ContextUnderstandingResult, ContextUnderstandingSchema
+
+
+class ContextUnderstandingParser:
+    _FALLBACK_GIST = "Не удалось надежно определить суть диалога."
+
+    def parse(
+        self,
+        raw_response: str,
+        user_query: str,
+        *,
+        schema_retry_used: bool = False,
+    ) -> ContextUnderstandingResult:
+        raw = str(raw_response or "").strip()
+        if not raw:
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=str(raw_response or ""),
+                parsed_json={},
+                fallback_reason="empty_response",
+                schema_retry_used=schema_retry_used,
+                validation_error="empty_response",
+            )
+
+        extracted_json, extracted_from_wrapped = self._extract_json_object(raw)
+        if extracted_json is None:
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=raw,
+                parsed_json={},
+                fallback_reason="json_object_not_found",
+                schema_retry_used=schema_retry_used,
+                validation_error="json_object_not_found",
+            )
+
+        try:
+            parsed = json.loads(extracted_json)
+        except Exception as error:
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=raw,
+                parsed_json={},
+                fallback_reason="json_decode_error",
+                json_extracted_from_wrapped_response=extracted_from_wrapped,
+                schema_retry_used=schema_retry_used,
+                validation_error=f"json_decode_error:{error.__class__.__name__}",
+            )
+
+        if not isinstance(parsed, dict):
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=raw,
+                parsed_json={},
+                fallback_reason="json_root_is_not_object",
+                json_extracted_from_wrapped_response=extracted_from_wrapped,
+                schema_retry_used=schema_retry_used,
+                validation_error="json_root_is_not_object",
+            )
+
+        try:
+            schema = ContextUnderstandingSchema.model_validate(parsed)
+        except ValidationError as error:
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=raw,
+                parsed_json=dict(parsed),
+                fallback_reason="schema_validation_failed",
+                json_extracted_from_wrapped_response=extracted_from_wrapped,
+                schema_retry_used=schema_retry_used,
+                validation_error=f"schema_validation_failed:{error.errors()}",
+            )
+
+        gist = schema.gist.strip()
+        meaning = schema.meaning.strip()
+        if not gist or not meaning:
+            return self.build_fallback(
+                user_query=user_query,
+                raw_response=raw,
+                parsed_json=dict(parsed),
+                fallback_reason="empty_required_field",
+                json_extracted_from_wrapped_response=extracted_from_wrapped,
+                schema_retry_used=schema_retry_used,
+                validation_error="empty_required_field:gist_or_meaning",
+            )
+
+        return ContextUnderstandingResult(
+            gist=gist,
+            meaning=meaning,
+            raw_response=raw,
+            parsed_json=dict(parsed),
+            fallback_used=False,
+            fallback_reason="",
+            json_extracted_from_wrapped_response=extracted_from_wrapped,
+            schema_retry_used=schema_retry_used,
+            validation_error="",
+        )
+
+    @classmethod
+    def build_fallback(
+        cls,
+        user_query: str,
+        raw_response: str,
+        parsed_json: dict[str, object] | None,
+        fallback_reason: str,
+        json_extracted_from_wrapped_response: bool = False,
+        schema_retry_used: bool = False,
+        validation_error: str = "",
+    ) -> ContextUnderstandingResult:
+        return ContextUnderstandingResult(
+            gist=cls._FALLBACK_GIST,
+            meaning=f"Последняя реплика клиента: {user_query}",
+            raw_response=str(raw_response or ""),
+            parsed_json=dict(parsed_json or {}),
+            fallback_used=True,
+            fallback_reason=fallback_reason,
+            json_extracted_from_wrapped_response=json_extracted_from_wrapped_response,
+            schema_retry_used=schema_retry_used,
+            validation_error=validation_error,
+        )
+
+    @staticmethod
+    def _extract_json_object(text: str) -> tuple[str | None, bool]:
+        decoder = JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                _, end = decoder.raw_decode(text[index:])
+            except Exception:
+                continue
+            extracted = text[index : index + end]
+            wrapped = index != 0 or end != len(text[index:])
+            return extracted, wrapped
+        return None, False
+
+===== FILE: /root/project/Chat_bot/the_First_Agent/Agent_Zero/context_understanding_agent.py =====
+from __future__ import annotations
+
+from pathlib import Path
+from string import Template
+from typing import Any
+
+from src.core.interfaces import LLMProvider
+from the_First_Agent.Agent_Zero.models import ContextUnderstandingResult
+from the_First_Agent.Agent_Zero.parser import ContextUnderstandingParser
+
+
+class ContextUnderstandingAgent:
+    _SCHEMA_RETRY_LIMIT = 1
+    _SCHEMA_RETRY_SUFFIX = (
+        "\n\nТвоя предыдущая попытка нарушила схему JSON.\n"
+        "Верни только JSON с двумя полями: gist и meaning.\n"
+        "Не добавляй другие поля.\n"
+        "Не добавляй текст вне JSON.\n"
+        "gist: одно короткое предложение, не больше 25 слов.\n"
+        "meaning: одно короткое предложение, не больше 25 слов.\n"
+    )
+
+    def __init__(
+        self,
+        llm: LLMProvider,
+        prompt_path: Path,
+        logger: Any | None = None,
+    ) -> None:
+        self._llm = llm
+        self._prompt_path = Path(prompt_path)
+        self._prompt_template = Template(
+            self._prompt_path.read_text(encoding="utf-8")
+            .replace("{dialog_text}", "$dialog_text")
+            .replace("{user_query}", "$user_query")
+        )
+        self._parser = ContextUnderstandingParser()
+        self._logger = logger
+
+    def build_prompt(
+        self,
+        dialog_text: str,
+        user_query: str,
+    ) -> str:
+        return self._prompt_template.safe_substitute(
+            dialog_text=str(dialog_text),
+            user_query=str(user_query),
+        )
+
+    def understand(
+        self,
+        dialog_text: str,
+        user_query: str,
+    ) -> ContextUnderstandingResult:
+        prompt = self.build_prompt(dialog_text=dialog_text, user_query=user_query)
+        self._log("context_understanding_prompt_built", {"prompt": prompt, "user_query": user_query})
+        llm_attempts: list[dict[str, object]] = []
+        try:
+            raw_response = str(self._llm.generate_json(prompt) or "")
+        except Exception as error:
+            result = ContextUnderstandingParser.build_fallback(
+                user_query=user_query,
+                raw_response="",
+                parsed_json={},
+                fallback_reason="context_understanding_llm_error",
+                validation_error=str(error),
+            )
+            self._log(
+                "context_understanding_fallback",
+                {
+                    "error": str(error),
+                    "fallback_reason": result.fallback_reason,
+                    "gist": result.gist,
+                    "meaning": result.meaning,
+                    "validation_error": result.validation_error,
+                },
+            )
+            return result
+
+        result = self._parser.parse(raw_response=raw_response, user_query=user_query)
+        llm_attempts.append(
+            {
+                "attempt": 1,
+                "feedback_applied": False,
+                "raw_response": raw_response,
+                "fallback_used": result.fallback_used,
+                "fallback_reason": result.fallback_reason,
+                "json_extracted_from_wrapped_response": result.json_extracted_from_wrapped_response,
+                "validation_error": result.validation_error,
+            }
+        )
+        if result.fallback_used and result.fallback_reason == "schema_validation_failed":
+            result = self._retry_on_schema_error(
+                prompt=prompt,
+                user_query=user_query,
+                llm_attempts=llm_attempts,
+            )
+        self._log(
+            "context_understanding_result",
+            {
+                "raw_response": result.raw_response,
+                "parsed_json": result.parsed_json,
+                "gist": result.gist,
+                "meaning": result.meaning,
+                "fallback_used": result.fallback_used,
+                "fallback_reason": result.fallback_reason,
+                "json_extracted_from_wrapped_response": result.json_extracted_from_wrapped_response,
+                "schema_retry_used": result.schema_retry_used,
+                "validation_error": result.validation_error,
+                "llm_attempts": llm_attempts,
+            },
+        )
+        return result
+
+    def _retry_on_schema_error(
+        self,
+        prompt: str,
+        user_query: str,
+        llm_attempts: list[dict[str, object]],
+    ) -> ContextUnderstandingResult:
+        retry_prompt = f"{prompt}{self._SCHEMA_RETRY_SUFFIX}"
+        last_result: ContextUnderstandingResult | None = None
+        for attempt_index in range(self._SCHEMA_RETRY_LIMIT):
+            try:
+                raw_retry = str(self._llm.generate_json(retry_prompt) or "")
+            except Exception as error:
+                result = ContextUnderstandingParser.build_fallback(
+                    user_query=user_query,
+                    raw_response="",
+                    parsed_json={},
+                    fallback_reason="context_understanding_llm_error",
+                    schema_retry_used=True,
+                    validation_error=str(error),
+                )
+                llm_attempts.append(
+                    {
+                        "attempt": attempt_index + 2,
+                        "feedback_applied": True,
+                        "raw_response": "",
+                        "fallback_used": True,
+                        "fallback_reason": result.fallback_reason,
+                        "json_extracted_from_wrapped_response": False,
+                        "validation_error": result.validation_error,
+                    }
+                )
+                return result
+
+            parsed_retry = self._parser.parse(
+                raw_response=raw_retry,
+                user_query=user_query,
+                schema_retry_used=True,
+            )
+            llm_attempts.append(
+                {
+                    "attempt": attempt_index + 2,
+                    "feedback_applied": True,
+                    "raw_response": raw_retry,
+                    "fallback_used": parsed_retry.fallback_used,
+                    "fallback_reason": parsed_retry.fallback_reason,
+                    "json_extracted_from_wrapped_response": parsed_retry.json_extracted_from_wrapped_response,
+                    "validation_error": parsed_retry.validation_error,
+                }
+            )
+            if not parsed_retry.fallback_used:
+                return parsed_retry
+            last_result = parsed_retry
+
+        if last_result is not None:
+            return last_result
+
+        return ContextUnderstandingParser.build_fallback(
+            user_query=user_query,
+            raw_response="",
+            parsed_json={},
+            fallback_reason="schema_validation_failed",
+            schema_retry_used=True,
+            validation_error="schema_retry_exhausted",
+        )
+
+    def _log(self, event: str, payload: dict[str, object]) -> None:
+        if self._logger is None:
+            return
+        if hasattr(self._logger, "info"):
+            try:
+                self._logger.info(event, extra={"context_understanding": payload})
+                return
+            except Exception:
+                return
+
+===== FILE: /root/project/Chat_bot/the_First_Agent/prompts/context_understanding_prompt.txt =====
+Ты старательный агент понимания контекста диалога.
+
+Компания продает подписки на профессиональные каталоги автозапчастей и технической информации для автомобилей, грузовой техники и спецтехники.
+
+Твоя задача:
+* понять смысл только последней реплики клиента;
+* использовать историю только как контекст для коротких, неполных и переключающих тему реплик;
+* кратко описать текущий контекст диалога;
+* вернуть только JSON.
+
+Правила:
+* Анализируй именно последнюю реплику клиента.
+* Последняя реплика клиента важнее истории диалога.
+* Если клиент переключил тему — не тащи старую тему из истории.
+* `meaning` важнее `gist`.
+* Не отвечай клиенту.
+* Не классифицируй intent.
+* Не используй intent_id, внутренние названия тем и технические термины.
+
+Короткие и контекстные реплики:
+
+* да
+* нет
+* являюсь
+* yes
+* no
+* legal
+* все
+* а какие есть
+* на него
+* для него
+* тогда только TIS
+* подобные короткие ответы
+
+Поля ответа:
+
+* `gist` — краткий текущий контекст диалога.
+* `meaning` — смысл последней реплики клиента в контексте диалога.
+
+Правила для `meaning`:
+
+* Объясняй только смысл последней реплики клиента.
+* Разрешено кратко определить:
+
+  * подтверждение;
+  * отрицание;
+  * уточнение;
+  * смену темы;
+  * продолжение предыдущего вопроса;
+  * шумовой или нерелевантный ответ.
+* Не придумывай скрытые эмоции, мотивы и намерения, которых нет в диалоге.
+* Не придумывай смысл шумовым сообщениям.
+* Если реплика бессмысленная или не отвечает на вопрос — скажи это прямо и кратко.
+* Не используй названия системных тем вроде "Демо-доступ", "Тарифы EPC", "Покупка как физлицо".
+* `meaning` должен быть одним коротким предложением.
+* Не больше 25 слов.
+
+Правила для `gist`:
+
+* `gist` должен описывать только текущий контекст диалога.
+* Не тащи старые темы, если они больше не нужны для понимания последней реплики.
+* `gist` должен быть одним коротким предложением.
+* Не больше 25 слов.
+
+Формат ответа:
+{
+"gist": "краткий контекст диалога",
+"meaning": "смысл последней реплики клиента"
+}
+
+Ограничения:
+* Используй только поля `gist` и `meaning`.
+* Не добавляй другие поля.
+* Не добавляй текст вне JSON.
+* Ответ должен начинаться с `{`
+* Ответ должен заканчиваться `}`
+
+Диалог:
+{dialog_text}
+
+Последняя реплика клиента:
+{user_query}
+
+===== FILE: /root/project/Chat_bot/tests/test_context_understanding_parser_01.py =====
+from __future__ import annotations
+
+import unittest
+
+from the_First_Agent.Agent_Zero.parser import ContextUnderstandingParser
+
+
+class ContextUnderstandingParser01Tests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.parser = ContextUnderstandingParser()
+        self.user_query = "да"
+
+
+def _make_parser_success_test(raw_response: str):
+    def _test(self: ContextUnderstandingParser01Tests) -> None:
+        result = self.parser.parse(raw_response=raw_response, user_query=self.user_query)
+        self.assertFalse(result.fallback_used)
+        self.assertTrue(result.gist)
+        self.assertTrue(result.meaning)
+
+    return _test
+
+
+def _make_parser_fallback_test(raw_response: str):
+    def _test(self: ContextUnderstandingParser01Tests) -> None:
+        result = self.parser.parse(raw_response=raw_response, user_query=self.user_query)
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.meaning, f"Последняя реплика клиента: {self.user_query}")
+
+    return _test
+
+
+_SUCCESS_CASES = [
+    ('{"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус."}', "plain_json"),
+    ('  {"gist":"Диалог о цене.","meaning":"Клиент спрашивает стоимость."}  ', "json_with_whitespace"),
+    ('prefix {"gist":"Диалог о бренде.","meaning":"Клиент уточняет бренд."}', "text_before_json"),
+    ('{"gist":"Диалог о покупке.","meaning":"Клиент готов купить."} suffix', "text_after_json"),
+    ('prefix {"gist":"Диалог о TIS.","meaning":"Клиент переключился на TIS."} suffix', "text_around_json"),
+    ('```json\n{"gist":"Диалог о статусе.","meaning":"Клиент подтверждает статус."}\n```', "code_fence"),
+    ('{"gist":"Короткий диалог.","meaning":"Ответ является подтверждением."}\n\nлишний хвост', "tail_after_json"),
+    ('noise\nnoise\n{"gist":"Диалог о Volvo.","meaning":"Клиент спрашивает цену для Volvo."}', "multiline_prefix"),
+]
+
+_FALLBACK_CASES = [
+    ("", "empty_response", "empty_response"),
+    ("not json", "plain_text", "json_object_not_found"),
+    ('{"meaning":"Клиент подтвердил статус."}', "missing_gist", "schema_validation_failed"),
+    ('{"gist":"Диалог о статусе."}', "missing_meaning", "schema_validation_failed"),
+    ('{"gist":"","meaning":"Клиент подтвердил статус."}', "empty_gist", "empty_required_field"),
+    ('{"gist":"Диалог о статусе.","meaning":""}', "empty_meaning", "empty_required_field"),
+    ('{"gist":123,"meaning":"Клиент подтвердил статус."}', "gist_wrong_type", "schema_validation_failed"),
+    ('{"gist":"Диалог о статусе.","meaning":123}', "meaning_wrong_type", "schema_validation_failed"),
+    ('{"gist":"Диалог о статусе.","meaning":"Клиент подтвердил статус.","extra":"x"}', "extra_field", "schema_validation_failed"),
+    ('[]', "json_array", "json_object_not_found"),
+    ('{"gist":"Диалог","meaning":"Смысл"', "broken_json", "json_object_not_found"),
+    ('prefix [1,2,3] suffix', "non_object_json", "json_object_not_found"),
+]
+
+
+class ContextUnderstandingParserDiagnosticsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.parser = ContextUnderstandingParser()
+
+    def test_wrapped_json_sets_extraction_flag(self) -> None:
+        result = self.parser.parse(
+            raw_response='prefix {"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус."} suffix',
+            user_query="да",
+        )
+        self.assertFalse(result.fallback_used)
+        self.assertTrue(result.json_extracted_from_wrapped_response)
+
+    def test_plain_json_does_not_set_extraction_flag(self) -> None:
+        result = self.parser.parse(
+            raw_response='{"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус."}',
+            user_query="да",
+        )
+        self.assertFalse(result.fallback_used)
+        self.assertFalse(result.json_extracted_from_wrapped_response)
+
+    def test_extra_field_keeps_validation_error(self) -> None:
+        result = self.parser.parse(
+            raw_response='{"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус.","extra":"x"}',
+            user_query="да",
+        )
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.fallback_reason, "schema_validation_failed")
+        self.assertIn("schema_validation_failed", result.validation_error)
+
+    def test_empty_response_has_specific_reason(self) -> None:
+        result = self.parser.parse(raw_response="", user_query="да")
+        self.assertEqual(result.fallback_reason, "empty_response")
+
+    def test_empty_fields_have_specific_reason(self) -> None:
+        result = self.parser.parse(
+            raw_response='{"gist":"","meaning":"Клиент подтвердил статус."}',
+            user_query="да",
+        )
+        self.assertEqual(result.fallback_reason, "empty_required_field")
+
+
+for index, (raw_response, label) in enumerate(_SUCCESS_CASES, start=1):
+    setattr(
+        ContextUnderstandingParser01Tests,
+        f"test_success_{index:02d}_{label}",
+        _make_parser_success_test(raw_response),
+    )
+
+for index, (raw_response, label, expected_reason) in enumerate(_FALLBACK_CASES, start=1):
+    def _make_reasoned_test(raw_response: str, expected_reason: str):
+        def _test(self: ContextUnderstandingParser01Tests) -> None:
+            result = self.parser.parse(raw_response=raw_response, user_query=self.user_query)
+            self.assertTrue(result.fallback_used)
+            self.assertEqual(result.fallback_reason, expected_reason)
+            self.assertEqual(result.meaning, f"Последняя реплика клиента: {self.user_query}")
+
+        return _test
+
+    setattr(
+        ContextUnderstandingParser01Tests,
+        f"test_fallback_{index:02d}_{label}",
+        _make_reasoned_test(raw_response, expected_reason),
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+===== FILE: /root/project/Chat_bot/tests/test_context_understanding_prompt_01.py =====
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from src.config.loader import ConfigLoader
+from the_First_Agent.Agent_Zero.context_understanding_agent import ContextUnderstandingAgent
+
+
+class _DummyLLM:
+    def generate_text(self, prompt: str) -> str:
+        return ""
+
+    def generate_json(self, prompt: str) -> str:
+        return '{"gist":"x","meaning":"y"}'
+
+
+class ContextUnderstandingPrompt01Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.project_root = Path(__file__).resolve().parents[1]
+        cls.config = ConfigLoader(cls.project_root / "config.yaml").load()
+        cls.prompt_path = cls.project_root / cls.config.paths.context_understanding_prompt
+        cls.agent = ContextUnderstandingAgent(_DummyLLM(), cls.prompt_path)
+        cls.prompt = cls.agent.build_prompt(
+            dialog_text="бот: Вы юрлицо?\nклиент: да",
+            user_query="да",
+        )
+
+
+def _assert_prompt_contains(fragment: str):
+    def _test(self: ContextUnderstandingPrompt01Tests) -> None:
+        self.assertIn(fragment, self.prompt)
+
+    return _test
+
+
+_PROMPT_ASSERTIONS = [
+    ("Диалог:", "dialog_section"),
+    ("Последняя реплика клиента:", "user_query_section"),
+    ("Формат ответа:", "format_section"),
+    ('"gist": "краткая суть текущего диалога"', "gist_field"),
+    ('"meaning": "смысл последней реплики клиента в контексте"', "meaning_field"),
+    ("Не используй системные intent_id.", "no_intent_ids_rule"),
+    ("Поле meaning важнее поля gist.", "meaning_priority_rule"),
+    ("Если gist и meaning расходятся, ориентируйся на meaning.", "gist_meaning_conflict_rule"),
+    ("gist не должен тащить старые намерения, если они уже не нужны для понимания последней реплики клиента.", "gist_history_limit_rule"),
+    ("Не называй системные темы вроде", "no_system_topic_labels_rule"),
+    ("gist должен быть одним коротким предложением, не больше 25 слов.", "gist_length_rule"),
+    ("meaning должен быть одним коротким предложением, не больше 25 слов.", "meaning_length_rule"),
+    ("Не добавляй текст вне JSON.", "json_only_rule"),
+    ("Ответ должен начинаться с {", "starts_with_brace_rule"),
+    ("Ответ должен заканчиваться }", "ends_with_brace_rule"),
+    ("Короткие и контекстные реплики:", "short_reply_section"),
+]
+
+
+for index, (fragment, label) in enumerate(_PROMPT_ASSERTIONS, start=1):
+    setattr(
+        ContextUnderstandingPrompt01Tests,
+        f"test_prompt_{index:02d}_{label}",
+        _assert_prompt_contains(fragment),
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+===== FILE: /root/project/Chat_bot/tests/test_context_understanding_agent_01.py =====
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from src.config.loader import ConfigLoader
+from src.core.interfaces import LLMProvider
+from the_First_Agent.Agent_Zero.context_understanding_agent import ContextUnderstandingAgent
+
+
+class _ScriptedContextLLM(LLMProvider):
+    def __init__(self, raise_on_call: int | None = None) -> None:
+        self.prompts: list[str] = []
+        self.raise_on_call = raise_on_call
+        self.call_count = 0
+        self.last_response = ""
+
+    def generate_text(self, prompt: str) -> str:
+        return ""
+
+    def generate_json(self, prompt: str) -> str:
+        self.call_count += 1
+        self.prompts.append(prompt)
+        if self.raise_on_call is not None and self.call_count == self.raise_on_call:
+            raise RuntimeError("fake llm error")
+        user_query = self._extract_user_query(prompt)
+        cases = [
+            ("yes, legal", '{"gist":"Клиент интересуется демо-доступом, бот уточняет статус клиента.","meaning":"Клиент подтвердил, что является юридическим лицом для получения демо-доступа."}'),
+            ("нет", '{"gist":"Клиент интересуется демо-доступом, бот уточняет статус клиента.","meaning":"Клиент отрицательно ответил на вопрос о юридическом статусе в контексте демо."}'),
+            ("....548", '{"gist":"Бот уточняет статус клиента для демо-доступа.","meaning":"Последняя реплика выглядит как шумовой или нерелевантный ответ и не отвечает на вопрос о статусе."}'),
+            ("Либо тогда только TIS", '{"gist":"Обсуждался частичный доступ к EPC, затем клиент сменил тему.","meaning":"Клиент переключился на отдельный продукт TIS."}'),
+            ("а сколько на него TIS?", '{"gist":"Клиент уточняет цену TIS для ранее упомянутого бренда Volvo.","meaning":"Клиент спрашивает стоимость TIS для Volvo."}'),
+            ("Да, являюсь", '{"gist":"Бот уточняет статус клиента перед оформлением.","meaning":"Клиент подтвердил статус юридического лица или представителя автобизнеса."}'),
+            ("no", '{"gist":"Бот уточняет статус клиента перед демо.","meaning":"Клиент отрицает, что относится к требуемому статусу."}'),
+            ("legal", '{"gist":"Бот уточняет статус клиента.","meaning":"Клиент кратко подтверждает юридический статус."}'),
+            ("все", '{"gist":"Бот уточняет бренды для расчета TIS.","meaning":"Клиент просит показать все доступные бренды."}'),
+            ("а какие есть", '{"gist":"Бот уточняет бренды для расчета TIS.","meaning":"Клиент просит перечислить доступные бренды."}'),
+            ("на него", '{"gist":"Клиент обсуждает ранее названный бренд.","meaning":"Клиент имеет в виду ранее упомянутый бренд и продолжает запрос по нему."}'),
+            ("для него", '{"gist":"Клиент обсуждает ранее названный бренд.","meaning":"Клиент продолжает запрос применительно к ранее упомянутому бренду."}'),
+            ("TIS", '{"gist":"Клиент спрашивает про продукт TIS.","meaning":"Клиент делает короткий самостоятельный продуктовый запрос про TIS."}'),
+            ("EPC", '{"gist":"Клиент спрашивает про продукт EPC.","meaning":"Клиент делает короткий самостоятельный продуктовый запрос про EPC."}'),
+            ("демо", '{"gist":"Клиент интересуется тестовым доступом.","meaning":"Клиент коротко запрашивает демо-доступ."}'),
+            ("Почему не продаете физлицам?", '{"gist":"Клиент обсуждает условия продажи.","meaning":"Клиент спрашивает причину отказа в продаже физическим лицам."}'),
+            ("Хочу купить как физ лицо", '{"gist":"Клиент обсуждает покупку доступа.","meaning":"Клиент хочет купить доступ как физическое лицо."}'),
+            ("вы мошенники", '{"gist":"Клиент выражает резкое недоверие к компании.","meaning":"Клиент делает конфликтное обвинительное заявление, не задавая предметный вопрос."}'),
+            ("мне обещали бесплатно навсегда", '{"gist":"Клиент обсуждает условия бесплатного доступа.","meaning":"Клиент утверждает, что ему обещали бесплатный доступ без ограничения по времени."}'),
+            ("INVALID_JSON_CASE", 'невалидный ответ'),
+            ("RETRY_EXTRA_FIELD_CASE", '{"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус.","extra":"x"}' if self.call_count == 1 else '{"gist":"Диалог о демо.","meaning":"Клиент подтвердил статус."}'),
+        ]
+        for needle, response in cases:
+            if needle == user_query:
+                self.last_response = response
+                return response
+        self.last_response = '{"gist":"Общий диалог.","meaning":"Клиент продолжает разговор по текущей теме."}'
+        return self.last_response
+
+    @staticmethod
+    def _extract_user_query(prompt: str) -> str:
+        marker = "Последняя реплика клиента:\n"
+        tail = prompt.split(marker, 1)[1] if marker in prompt else prompt
+        return tail.strip().splitlines()[0].strip()
+
+
+class ContextUnderstandingAgent01Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.project_root = Path(__file__).resolve().parents[1]
+        cls.config = ConfigLoader(cls.project_root / "config.yaml").load()
+        cls.prompt_path = cls.project_root / cls.config.paths.context_understanding_prompt
+
+    def setUp(self) -> None:
+        self.llm = _ScriptedContextLLM()
+        self.agent = ContextUnderstandingAgent(self.llm, self.prompt_path)
+
+
+def _make_agent_keyword_test(dialog_text: str, user_query: str, expected_keywords: tuple[str, ...]):
+    def _test(self: ContextUnderstandingAgent01Tests) -> None:
+        result = self.agent.understand(dialog_text=dialog_text, user_query=user_query)
+        self.assertFalse(result.fallback_used)
+        lowered_meaning = result.meaning.lower()
+        for keyword in expected_keywords:
+            self.assertIn(keyword, lowered_meaning)
+        self.assertIn(dialog_text, self.llm.prompts[-1])
+        self.assertIn(user_query, self.llm.prompts[-1])
+
+    return _test
+
+
+def _make_agent_fallback_test(user_query: str):
+    def _test(self: ContextUnderstandingAgent01Tests) -> None:
+        result = self.agent.understand(
+            dialog_text="бот: Мы можем предоставить демо только юрлицам.",
+            user_query=user_query,
+        )
+        self.assertTrue(result.fallback_used)
+        self.assertTrue(result.fallback_reason)
+        self.assertEqual(result.meaning, f"Последняя реплика клиента: {user_query}")
+
+    return _test
+
+
+_INTEGRATION_CASES = [
+    ("бот: Мы можем предоставить демо только юрлицам. Вы представитель автобизнеса?", "yes, legal", ("подтверд", "юрид", "демо")),
+    ("бот: Мы можем предоставить демо только юрлицам. Вы представитель автобизнеса?", "нет", ("отриц", "статус", "демо")),
+    ("бот: Мы можем предоставить демо только юрлицам. Вы представитель автобизнеса?", "....548", ("шум", "нерелевант", "вопрос")),
+    ("клиент: Можно только один бренд?\nбот: EPC Full продается только полным пакетом.", "Либо тогда только TIS", ("переключ", "tis")),
+    ("клиент: есть Volvo?\nбот: есть", "а сколько на него TIS?", ("стоим", "tis", "volvo")),
+    ("бот: Вы юрлицо?", "Да, являюсь", ("подтверд", "статус")),
+    ("бот: Вы юрлицо?", "no", ("отриц", "статус")),
+    ("бот: Вы юрлицо?", "legal", ("подтверж", "юрид")),
+    ("бот: По TIS подскажите бренды.", "все", ("все", "бренд")),
+    ("бот: По TIS подскажите бренды.", "а какие есть", ("перечис", "бренд")),
+    ("клиент: есть Volvo?\nбот: есть", "на него", ("ранее", "бренд")),
+    ("клиент: есть Volvo?\nбот: есть", "для него", ("ранее", "бренд")),
+    ("клиент: TIS", "TIS", ("корот", "tis")),
+    ("клиент: EPC", "EPC", ("корот", "epc")),
+    ("клиент: демо", "демо", ("демо", "доступ")),
+    ("клиент: Почему не продаете физлицам?", "Почему не продаете физлицам?", ("причин", "физ")),
+    ("клиент: Хочу купить как физ лицо", "Хочу купить как физ лицо", ("куп", "физ")),
+    ("клиент: вы мошенники", "вы мошенники", ("обвин", "заявлен")),
+    ("клиент: мне обещали бесплатно навсегда", "мне обещали бесплатно навсегда", ("обещал", "бесплат")),
+]
+
+_FALLBACK_CASES = [
+    "INVALID_JSON_CASE",
+]
+
+
+for index, (dialog_text, user_query, expected_keywords) in enumerate(_INTEGRATION_CASES, start=1):
+    setattr(
+        ContextUnderstandingAgent01Tests,
+        f"test_agent_integration_{index:02d}",
+        _make_agent_keyword_test(dialog_text, user_query, expected_keywords),
+    )
+
+for index, user_query in enumerate(_FALLBACK_CASES, start=1):
+    setattr(
+        ContextUnderstandingAgent01Tests,
+        f"test_agent_fallback_{index:02d}",
+        _make_agent_fallback_test(user_query),
+    )
+
+
+class ContextUnderstandingAgentDiagnosticsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.project_root = Path(__file__).resolve().parents[1]
+        cls.config = ConfigLoader(cls.project_root / "config.yaml").load()
+        cls.prompt_path = cls.project_root / cls.config.paths.context_understanding_prompt
+
+    def test_llm_exception_returns_fallback(self) -> None:
+        agent = ContextUnderstandingAgent(_ScriptedContextLLM(raise_on_call=1), self.prompt_path)
+        result = agent.understand("бот: Вы юрлицо?", "да")
+        self.assertTrue(result.fallback_used)
+        self.assertEqual(result.fallback_reason, "context_understanding_llm_error")
+
+    def test_schema_retry_recovers_from_extra_field(self) -> None:
+        llm = _ScriptedContextLLM()
+        agent = ContextUnderstandingAgent(llm, self.prompt_path)
+        result = agent.understand("бот: Вы юрлицо?", "RETRY_EXTRA_FIELD_CASE")
+        self.assertFalse(result.fallback_used)
+        self.assertTrue(result.schema_retry_used)
+        self.assertEqual(llm.call_count, 2)
+        self.assertEqual(result.raw_response, llm.last_response)
+
+    def test_retry_is_not_used_for_plain_invalid_json(self) -> None:
+        llm = _ScriptedContextLLM()
+        agent = ContextUnderstandingAgent(llm, self.prompt_path)
+        result = agent.understand("бот: Вы юрлицо?", "INVALID_JSON_CASE")
+        self.assertTrue(result.fallback_used)
+        self.assertFalse(result.schema_retry_used)
+        self.assertEqual(result.fallback_reason, "json_object_not_found")
+        self.assertEqual(llm.call_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+===== FILE: /root/project/Chat_bot/tests/test_context_understanding_agent_real.py =====
+from __future__ import annotations
+
+import os
+import unittest
+from pathlib import Path
+
+import requests
+
+from src.config.loader import ConfigLoader
+from tests.support.reliable_ollama_provider import ReliableOllamaTestProvider, TestLLMRuntimeConfig
+from the_First_Agent.Agent_Zero.context_understanding_agent import ContextUnderstandingAgent
+
+
+class ContextUnderstandingAgentRealTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if os.getenv("RUN_REAL_CONTEXT_UNDERSTANDING_TESTS") != "1":
+            raise unittest.SkipTest("Real Agent Zero tests are disabled. Set RUN_REAL_CONTEXT_UNDERSTANDING_TESTS=1")
+
+        cls.project_root = Path(__file__).resolve().parents[1]
+        cls.config = ConfigLoader(cls.project_root / "config.yaml").load()
+        cls.prompt_path = cls.project_root / cls.config.paths.context_understanding_prompt
+        cls._ensure_ollama_available(cls.config.llm.base_url)
+        cls.llm = ReliableOllamaTestProvider(
+            llm_config=cls.config.llm,
+            runtime=TestLLMRuntimeConfig(per_request_timeout_s=35, max_retries=1, retry_backoff_s=0.5),
+        )
+        cls.agent = ContextUnderstandingAgent(cls.llm, cls.prompt_path)
+
+    @staticmethod
+    def _ensure_ollama_available(base_url: str) -> None:
+        try:
+            response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5, proxies={"http": None, "https": None})
+            response.raise_for_status()
+        except Exception as error:
+            raise unittest.SkipTest(f"Ollama is unavailable: {error}")
+
+    def _assert_basic_contract(self, result) -> None:
+        self.assertFalse(result.fallback_used)
+        self.assertTrue(result.gist.strip())
+        self.assertTrue(result.meaning.strip())
+        self.assertFalse(result.json_extracted_from_wrapped_response)
+        lowered = f"{result.gist} {result.meaning}".lower()
+        for forbidden in (
+            "intent_id",
+            "demo_access",
+            "legal_entity_purchase_flow",
+            "brand_list_request",
+        ):
+            self.assertNotIn(forbidden, lowered)
+
+    def test_real_yes_legal(self) -> None:
+        result = self.agent.understand(
+            dialog_text="бот: Мы можем предоставить демо только юрлицам. Вы представитель автобизнеса?\nклиент: Да, являюсь",
+            user_query="Да, являюсь",
+        )
+        self._assert_basic_contract(result)
+
+    def test_real_switch_to_tis(self) -> None:
+        result = self.agent.understand(
+            dialog_text="клиент: Можно только один бренд?\nбот: EPC Full продается только полным пакетом.\nклиент: Либо тогда только TIS",
+            user_query="Либо тогда только TIS",
+        )
+        self._assert_basic_contract(result)
+
+    def test_real_noise_reply(self) -> None:
+        result = self.agent.understand(
+            dialog_text="бот: Мы можем предоставить демо только юрлицам. Вы представитель автобизнеса?\nклиент: ....548",
+            user_query="....548",
+        )
+        self._assert_basic_contract(result)
+        lowered = result.meaning.lower()
+        self.assertTrue(any(token in lowered for token in ("шум", "нерелевант", "непонят", "не отвечает")))
+
+
+if __name__ == "__main__":
+    unittest.main()
+

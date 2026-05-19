@@ -1,0 +1,87 @@
+fast_confidence: 0.95
+semantic_confidence: 0.30
+intent_resolution_margin: 0.05
+fast_priority_enabled: true
+semantic_override_margin: 0.12
+model_first_enabled: true
+abstain_threshold: 0.14
+guardrail_fast_intents:
+  - nonsense_input
+  - out_of_scope_request
+
+# Optional per-intent calibration for semantic router.
+semantic_confidence_by_intent:
+  epc_tariffs: 0.28
+  tis_tariffs: 0.28
+  brand_list_request: 0.25
+  specific_brand_check: 0.24
+  company_services_info: 0.27
+  demo_access: 0.26
+  purchase_ready: 0.26
+  legal_entity_purchase_flow: 0.27
+  payment_without_details: 0.30
+  api_integration: 0.26
+  human_operator_request: 0.26
+  physical_person_purchase: 0.28
+  no_private_sales_reason: 0.28
+
+semantic_confidence_for_danger_intents:
+  payment_without_details: 0.62
+  human_operator_request: 0.62
+
+signal_intent_bias:
+  data_accuracy:
+    - data_accuracy_doubt
+  post_payment_no_access:
+    - post_payment_no_access
+  post_payment_access_timing:
+    - post_payment_access_timing
+  nonsense:
+    - nonsense_input
+  abuse:
+    - nonsense_input
+
+# Optional per-signal bias strength (fallback default=0.12).
+signal_intent_bias_weights:
+  data_accuracy: 0.16
+  post_payment_no_access: 0.16
+  post_payment_access_timing: 0.14
+  nonsense: 0.20
+  abuse: 0.20
+
+# Small extra weight for model-backed semantic candidates.
+model_evidence_boost: 0.04
+dual_secondary_threshold: 0.22
+prompt_selector_top_n: 12
+prompt_topic_top_n: 12
+selector_min_score: 0.10
+rewrite_enabled: true
+rewrite_safety_mode: "strict_no_new_facts"
+single_topic_confidence_threshold: 0.55
+dual_topic_confidence_threshold: 0.72
+clarify_confidence_threshold: 0.35
+
+# Ambiguity abstain only for noisy/high-confusion intents.
+ambiguity_gate_intents:
+  - nonsense_input
+  - out_of_scope_request
+  - company_services_info
+  - epc_tariffs
+  - tis_tariffs
+  - demo_access
+  - free_catalog_comparison
+  - purchase_ready
+  - legal_entity_purchase_flow
+  - no_private_sales_reason
+ambiguity_gate_margin: 0.02
+
+# Per-intent ambiguity margins for confusable classes.
+ambiguity_gate_margin_by_intent:
+  company_services_info: 0.03
+  epc_tariffs: 0.03
+  tis_tariffs: 0.03
+  demo_access: 0.03
+  free_catalog_comparison: 0.03
+  purchase_ready: 0.03
+  legal_entity_purchase_flow: 0.03
+  no_private_sales_reason: 0.03
